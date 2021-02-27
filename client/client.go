@@ -67,10 +67,15 @@ func (s *Simple) Receive(scratch []byte) ([]byte, error) {
 		return nil, fmt.Errorf("http code %d, %s", resp.StatusCode, b.String())
 	}
 
-	b := bytes.NewBuffer(scratch)
+	b := bytes.NewBuffer(scratch[0:0])
 	_, err = io.Copy(b, resp.Body)
 	if err != nil {
 		return nil, err
+	}
+
+	// 0 bytes read but no errors means the end of file by convention.
+	if b.Len() == 0 {
+		return nil, io.EOF
 	}
 
 	return b.Bytes(), nil

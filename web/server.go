@@ -1,6 +1,8 @@
 package web
 
 import (
+	"io"
+
 	"github.com/YuriyNasretdinov/chukcha/server"
 	"github.com/valyala/fasthttp"
 )
@@ -39,7 +41,7 @@ func (s *Server) readHandler(ctx *fasthttp.RequestCtx) {
 	buf := make([]byte, defaultBufSize)
 
 	res, err := s.s.Receive(buf)
-	if err != nil {
+	if err != nil && err != io.EOF {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.WriteString(err.Error())
 		return
