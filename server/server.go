@@ -3,56 +3,56 @@ package server
 import (
 	"bytes"
 	"errors"
+	"io"
 )
 
-var errBufTooSmall = errors.New("buffer is too small to fit a single message")
+var (
+	errBufTooSmall = errors.New("buffer is too small to fit a single message")
+)
 
 // InMemory stores all the data in memory.
 type InMemory struct {
-	buf     bytes.Buffer
-	restBuf bytes.Buffer
+	buf []byte
 }
 
-// Send sends the messages to the Chukcha servers.
-func (s *InMemory) Send(msgs []byte) error {
-	_, err := s.buf.Write(msgs)
-	return err
+// Write accepts the messages from the clients and stores them.
+func (s *InMemory) Write(msgs []byte) error {
+	s.buf = append(s.buf, msgs...)
+	return nil
 }
 
-// Receive will either wait for new messages or return an
-// error in case something goes wrong.
-// The scratch buffer can be used to read the data.
-func (s *InMemory) Receive(scratch []byte) ([]byte, error) {
-	startOff := 0
+// Read copies the data from the in-memory store and writes
+// the data read to the provided Writer, starting with the
+// offset provided.
+func (s *InMemory) Read(off uint64, maxSize uint64, w io.Writer) error {
+	maxOff := uint64(len(s.buf))
 
-	if s.restBuf.Len() > 0 {
-		if s.restBuf.Len() >= len(scratch) {
-			return nil, errBufTooSmall
-		}
-
-		n, err := s.restBuf.Read(scratch)
-		if err != nil {
-			return nil, err
-		}
-
-		s.restBuf.Reset()
-		startOff += n
+	if off >= maxOff {
+		return nil
+	} else if off+maxSize >= maxOff {
+		w.Write(s.buf[off:])
+		return nil
 	}
 
-	n, err := s.buf.Read(scratch[startOff:])
+	// Read until the last message.
+	// Do not send the incomplete part of the last
+	// message if it is cut in half.
+	truncated, _, err := cutToLastMessage(s.buf[off : off+maxSize])
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	truncated, rest, err := cutToLastMessage(scratch[0 : n+startOff])
-	if err != nil {
-		return nil, err
+	if _, err := w.Write(truncated); err != nil {
+		return err
 	}
 
-	s.restBuf.Reset()
-	s.restBuf.Write(rest)
+	return nil
+}
 
-	return truncated, nil
+// Ack marks the current chunk as done and deletes it's contents.
+func (s *InMemory) Ack() error {
+	s.buf = nil
+	return nil
 }
 
 func cutToLastMessage(res []byte) (truncated []byte, rest []byte, err error) {
