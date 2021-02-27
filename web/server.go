@@ -4,19 +4,26 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/YuriyNasretdinov/chukcha/server"
 	"github.com/valyala/fasthttp"
 )
 
 const defaultBufSize = 512 * 1024
 
+// Storage defines an interface for the backend storage.
+// It can be either on-disk, in-memory, or other types of storage.
+type Storage interface {
+	Write(msgs []byte) error
+	Read(off uint64, maxSize uint64, w io.Writer) error
+	Ack() error
+}
+
 // Server implements a web server
 type Server struct {
-	s *server.InMemory
+	s Storage
 }
 
 // NewServer creates *Server
-func NewServer(s *server.InMemory) *Server {
+func NewServer(s Storage) *Server {
 	return &Server{s: s}
 }
 

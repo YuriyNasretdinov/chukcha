@@ -51,7 +51,7 @@ func (s *InMemory) Read(off uint64, maxSize uint64, w io.Writer) error {
 
 // Ack marks the current chunk as done and deletes it's contents.
 func (s *InMemory) Ack() error {
-	s.buf = nil
+	s.buf = s.buf[0:0]
 	return nil
 }
 
