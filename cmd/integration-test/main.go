@@ -24,6 +24,14 @@ const (
 )
 
 func main() {
+	if err := runTest(); err != nil {
+		log.Fatalf("Test failed: %v", err)
+	}
+
+	log.Printf("Test passed!")
+}
+
+func runTest() error {
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
 
 	goPath := os.Getenv("GOPATH")
@@ -67,19 +75,19 @@ func main() {
 
 	want, err := send(s)
 	if err != nil {
-		log.Fatalf("Send error: %v", err)
+		return fmt.Errorf("send: %v", err)
 	}
 
 	got, err := receive(s)
 	if err != nil {
-		log.Fatalf("Receive error: %v", err)
+		return fmt.Errorf("receive: %v", err)
 	}
 
 	if want != got {
-		log.Fatalf("The expected sum %d is not equal to the actual sum %d", want, got)
+		return fmt.Errorf("the expected sum %d is not equal to the actual sum %d", want, got)
 	}
 
-	log.Printf("The test passed!")
+	return nil
 }
 
 func send(s *client.Simple) (sum int64, err error) {
