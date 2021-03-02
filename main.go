@@ -12,6 +12,7 @@ import (
 var (
 	filename = flag.String("filename", "", "The filename where to put all the data")
 	inmem    = flag.Bool("inmem", false, "Whether or not use in-memory storage instead of a disk-based one")
+	port     = flag.Uint("port", 8080, "Network port to listen on")
 )
 
 func main() {
@@ -35,7 +36,7 @@ func main() {
 		backend = server.NewOnDisk(fp)
 	}
 
-	s := web.NewServer(backend)
+	s := web.NewServer(backend, *port)
 
 	log.Printf("Listening connections")
 	s.Serve()

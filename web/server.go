@@ -19,12 +19,13 @@ type Storage interface {
 
 // Server implements a web server
 type Server struct {
-	s Storage
+	s    Storage
+	port uint
 }
 
 // NewServer creates *Server
-func NewServer(s Storage) *Server {
-	return &Server{s: s}
+func NewServer(s Storage, port uint) *Server {
+	return &Server{s: s, port: port}
 }
 
 func (s *Server) handler(ctx *fasthttp.RequestCtx) {
@@ -79,5 +80,5 @@ func (s *Server) readHandler(ctx *fasthttp.RequestCtx) {
 
 // Serve listens to HTTP connections
 func (s *Server) Serve() error {
-	return fasthttp.ListenAndServe(":8080", s.handler)
+	return fasthttp.ListenAndServe(fmt.Sprintf(":%d", s.port), s.handler)
 }
