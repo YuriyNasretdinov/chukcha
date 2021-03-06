@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"go/build"
 	"io"
@@ -40,13 +41,14 @@ func runTest() error {
 	}
 
 	log.Printf("Compiling chukcha")
-	err := exec.Command("go", "install", "-v", "github.com/YuriyNasretdinov/chukcha").Run()
+	out, err := exec.Command("go", "install", "-v", "github.com/YuriyNasretdinov/chukcha").CombinedOutput()
 	if err != nil {
 		log.Printf("Failed to build: %v", err)
+		return fmt.Errorf("compilation failed: %v (out: %s)", err, string(out))
 	}
 
 	// TODO: make port random
-	port := 7537 // "test" in l33t
+	port := 7357 // "test" in l33t
 
 	// TODO: make db path random
 	dbPath := "/tmp/chukcha.db"
@@ -54,15 +56,19 @@ func runTest() error {
 
 	log.Printf("Running chukcha on port %d", port)
 
-	cmd := exec.Command(goPath+"/bin/chukcha", "-filename="+dbPath, fmt.Sprintf("-port=%d", port))
+	cmd := exec.Command(goPath+"/bin/chukcha", "-inmem", "-filename="+dbPath, fmt.Sprintf("-port=%d", port))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
 	cmd.Start()
 	defer cmd.Process.Kill()
 
 	log.Printf("Waiting for the port localhost:%d to open", port)
-	for {
-		timeout := time.Millisecond * 100
+	for i := 0; i <= 100; i++ {
+		timeout := time.Millisecond * 50
 		conn, err := net.DialTimeout("tcp", net.JoinHostPort("localhost", fmt.Sprint(port)), timeout)
 		if err != nil {
+			time.Sleep(timeout)
 			continue
 		}
 		conn.Close()
@@ -144,7 +150,7 @@ func receive(s *client.Simple) (sum int64, err error) {
 
 	for {
 		res, err := s.Receive(buf)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return sum, nil
 		} else if err != nil {
 			return 0, err
