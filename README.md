@@ -1,5 +1,7 @@
 # chukcha
-Easy to use distributed event bus similar to Kafka
+Easy to use distributed event bus similar to Kafka.
+
+The youtube playlist to see live development: https://www.youtube.com/watch?v=t3FdULDRfRM&list=PLWwSgbaBp9XqeuIuTWqpNtvf_EL0I4TJ2
 
 # Features (work in progress)
 
