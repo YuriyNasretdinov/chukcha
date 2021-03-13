@@ -11,23 +11,14 @@ import (
 
 const defaultBufSize = 512 * 1024
 
-// Storage defines an interface for the backend storage.
-// It can be either on-disk, in-memory, or other types of storage.
-type Storage interface {
-	Write(msgs []byte) error
-	ListChunks() ([]server.Chunk, error)
-	Read(chunk string, off uint64, maxSize uint64, w io.Writer) error
-	Ack(chunk string) error
-}
-
 // Server implements a web server
 type Server struct {
-	s    Storage
+	s    *server.OnDisk
 	port uint
 }
 
 // NewServer creates *Server
-func NewServer(s Storage, port uint) *Server {
+func NewServer(s *server.OnDisk, port uint) *Server {
 	return &Server{s: s, port: port}
 }
 

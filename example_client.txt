@@ -1,0 +1,7 @@
+You have 100 web servers and you receive some analytics data and you want to send it to a central location and process it there.
+
+Event:
+
+{"click_timestamp": 123, "user_id": 345}
+
+Your client uploads the data to Amazon S3 in big chunks. Or to ClickHouse.

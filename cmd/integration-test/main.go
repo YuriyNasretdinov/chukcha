@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/build"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -55,6 +56,11 @@ func runTest() error {
 	os.RemoveAll(dbPath)
 	os.Mkdir(dbPath, 0777)
 
+	// Initialise the database contents with
+	// a not easy-to-guess contents that must
+	// be preserved when writing to this directory.
+	ioutil.WriteFile("/tmp/chukcha/chunk1", []byte("12345\n"), 0666)
+
 	log.Printf("Running chukcha on port %d", port)
 
 	cmd := exec.Command(goPath+"/bin/chukcha", "-dirname="+dbPath, fmt.Sprintf("-port=%d", port))
@@ -90,8 +96,11 @@ func runTest() error {
 		return fmt.Errorf("receive: %v", err)
 	}
 
+	// The contents of the chunk that already existed.
+	want += 12345
+
 	if want != got {
-		return fmt.Errorf("the expected sum %d is not equal to the actual sum %d", want, got)
+		return fmt.Errorf("the expected sum %d is not equal to the actual sum %d (delivered %1.f%%)", want, got, (float64(got)/float64(want))*100)
 	}
 
 	return nil
