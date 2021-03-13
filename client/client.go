@@ -10,10 +10,8 @@ import (
 	"math/rand"
 	"net/http"
 
-	"github.com/YuriyNasretdinov/chukcha/server"
+	"github.com/YuriyNasretdinov/chukcha/protocol"
 )
-
-var errBufTooSmall = errors.New("buffer is too small to fit a single message")
 
 const defaultScratchSize = 64 * 1024
 
@@ -21,7 +19,7 @@ const defaultScratchSize = 64 * 1024
 type Simple struct {
 	addrs    []string
 	cl       *http.Client
-	curChunk server.Chunk
+	curChunk protocol.Chunk
 	off      uint64
 }
 
@@ -52,6 +50,8 @@ func (s *Simple) Send(msgs []byte) error {
 	return nil
 }
 
+var errRetry = errors.New("please retry the request")
+
 // Receive will either wait for new messages or return an
 // error in case something goes wrong.
 // The scratch buffer can be used to read the data.
@@ -60,6 +60,16 @@ func (s *Simple) Receive(scratch []byte) ([]byte, error) {
 		scratch = make([]byte, defaultScratchSize)
 	}
 
+	for {
+		res, err := s.receive(scratch)
+		if err == errRetry {
+			continue
+		}
+		return res, err
+	}
+}
+
+func (s *Simple) receive(scratch []byte) ([]byte, error) {
 	addrIdx := rand.Intn(len(s.addrs))
 	addr := s.addrs[addrIdx]
 
@@ -94,10 +104,24 @@ func (s *Simple) Receive(scratch []byte) ([]byte, error) {
 			if err := s.updateCurrentChunkCompleteStatus(addr); err != nil {
 				return nil, fmt.Errorf("updateCurrentChunkCompleteStatus: %v", err)
 			}
+
+			if !s.curChunk.Complete {
+				// We actually did read until the end and no new data appeared
+				// in between requests.
+				if s.off >= s.curChunk.Size {
+					return nil, io.EOF
+				}
+
+				// New data appeared in between us sending the read request and
+				// the chunk becoming complete.
+				return nil, errRetry
+			}
 		}
 
-		if !s.curChunk.Complete {
-			return nil, io.EOF
+		// The chunk has been marked complete. However, new data appeared
+		// in between us sending the read request and the chunk becoming complete.
+		if s.off < s.curChunk.Size {
+			return nil, errRetry
 		}
 
 		if err := s.ackCurrentChunk(addr); err != nil {
@@ -106,9 +130,9 @@ func (s *Simple) Receive(scratch []byte) ([]byte, error) {
 
 		// need to read the next chunk so that we do not return empty
 		// response
-		s.curChunk = server.Chunk{}
+		s.curChunk = protocol.Chunk{}
 		s.off = 0
-		return s.Receive(scratch)
+		return nil, errRetry
 	}
 
 	s.off += uint64(b.Len())
@@ -160,7 +184,7 @@ func (s *Simple) updateCurrentChunkCompleteStatus(addr string) error {
 	return nil
 }
 
-func (s *Simple) listChunks(addr string) ([]server.Chunk, error) {
+func (s *Simple) listChunks(addr string) ([]protocol.Chunk, error) {
 	listURL := fmt.Sprintf("%s/listChunks", addr)
 
 	resp, err := s.cl.Get(listURL)
@@ -179,7 +203,7 @@ func (s *Simple) listChunks(addr string) ([]server.Chunk, error) {
 		return nil, fmt.Errorf("listChunks error: %s", body)
 	}
 
-	var res []server.Chunk
+	var res []protocol.Chunk
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return nil, err
 	}
@@ -188,7 +212,7 @@ func (s *Simple) listChunks(addr string) ([]server.Chunk, error) {
 }
 
 func (s *Simple) ackCurrentChunk(addr string) error {
-	resp, err := s.cl.Get(fmt.Sprintf(addr+"/ack?chunk=%s", s.curChunk.Name))
+	resp, err := s.cl.Get(fmt.Sprintf(addr+"/ack?chunk=%s&size=%d", s.curChunk.Name, s.off))
 	if err != nil {
 		return err
 	}

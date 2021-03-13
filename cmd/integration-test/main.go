@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -52,14 +53,14 @@ func runTest() error {
 	port := 7357 // "test" in l33t
 
 	// TODO: make db path random
-	dbPath := "/tmp/chukcha"
+	dbPath := filepath.Join(os.TempDir(), "chukcha")
 	os.RemoveAll(dbPath)
 	os.Mkdir(dbPath, 0777)
 
 	// Initialise the database contents with
 	// a not easy-to-guess contents that must
 	// be preserved when writing to this directory.
-	ioutil.WriteFile("/tmp/chukcha/chunk1", []byte("12345\n"), 0666)
+	ioutil.WriteFile(filepath.Join(dbPath, "chunk1"), []byte("12345\n"), 0666)
 
 	log.Printf("Running chukcha on port %d", port)
 

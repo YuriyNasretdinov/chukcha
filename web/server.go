@@ -9,8 +9,6 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-const defaultBufSize = 512 * 1024
-
 // Server implements a web server
 type Server struct {
 	s    *server.OnDisk
@@ -48,11 +46,18 @@ func (s *Server) ackHandler(ctx *fasthttp.RequestCtx) {
 	chunk := ctx.QueryArgs().Peek("chunk")
 	if len(chunk) == 0 {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		ctx.WriteString(fmt.Sprintf("bad `chunk` GET param: chunk name must be provided"))
+		ctx.WriteString("bad `chunk` GET param: chunk name must be provided")
 		return
 	}
 
-	if err := s.s.Ack(string(chunk)); err != nil {
+	size, err := ctx.QueryArgs().GetUint("size")
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.WriteString(fmt.Sprintf("bad `size` GET param: %v", err))
+		return
+	}
+
+	if err := s.s.Ack(string(chunk), int64(size)); err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.WriteString(err.Error())
 	}
@@ -76,7 +81,7 @@ func (s *Server) readHandler(ctx *fasthttp.RequestCtx) {
 	chunk := ctx.QueryArgs().Peek("chunk")
 	if len(chunk) == 0 {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		ctx.WriteString(fmt.Sprintf("bad `chunk` GET param: chunk name must be provided"))
+		ctx.WriteString("bad `chunk` GET param: chunk name must be provided")
 		return
 	}
 
