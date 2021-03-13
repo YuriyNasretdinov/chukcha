@@ -91,6 +91,12 @@ func (s *Simple) Receive(scratch []byte) ([]byte, error) {
 	// 0 bytes read but no errors means the end of file by convention.
 	if b.Len() == 0 {
 		if !s.curChunk.Complete {
+			if err := s.updateCurrentChunkCompleteStatus(addr); err != nil {
+				return nil, fmt.Errorf("updateCurrentChunkCompleteStatus: %v", err)
+			}
+		}
+
+		if !s.curChunk.Complete {
 			return nil, io.EOF
 		}
 
@@ -133,6 +139,24 @@ func (s *Simple) updateCurrentChunk(addr string) error {
 	}
 
 	s.curChunk = chunks[0]
+	return nil
+}
+
+func (s *Simple) updateCurrentChunkCompleteStatus(addr string) error {
+	chunks, err := s.listChunks(addr)
+	if err != nil {
+		return fmt.Errorf("listChunks failed: %v", err)
+	}
+
+	// We need to prioritise the chunks that are complete
+	// so that we ack them.
+	for _, c := range chunks {
+		if c.Name == s.curChunk.Name {
+			s.curChunk = c
+			return nil
+		}
+	}
+
 	return nil
 }
 

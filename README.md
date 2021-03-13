@@ -1,7 +1,13 @@
 # chukcha
 Easy to use distributed event bus similar to Kafka.
 
+The messages are expected to be delimited by a new line character.
+
 The youtube playlist to see live development: https://www.youtube.com/watch?v=t3FdULDRfRM&list=PLWwSgbaBp9XqeuIuTWqpNtvf_EL0I4TJ2
+
+# Requirements
+
+Go 1.15+ is needed to build Chukcha.
 
 # Features (work in progress)
 
@@ -18,3 +24,4 @@ The youtube playlist to see live development: https://www.youtube.com/watch?v=t3
 
 1. Limit for the maximum message size is 1 MiB, otherwise we can no longer serve results from disk because we read from disk in 1 MiB chunks.
 2. Write a more fine-grained test for on-disk format.
+3. Handle situations when we run out of disk space or the number of inodes.
