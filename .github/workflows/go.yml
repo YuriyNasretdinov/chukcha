@@ -16,10 +16,13 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v2
       with:
-        go-version: 1.15
+        go-version: 1.16
 
     - name: Build
       run: go build -v ./...
 
-    - name: Test
+    - name: Unit Test
       run: go test -v ./...
+    
+    - name: Integration Test
+      run: "go install -v github.com/YuriyNasretdinov/chukcha/cmd/integration-test && ~/go/bin/integration-test"
