@@ -1,21 +1,21 @@
-package main
+package integration
 
 import (
 	"errors"
 	"fmt"
-	"go/build"
 	"io"
 	"io/ioutil"
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/YuriyNasretdinov/chukcha/client"
+	"github.com/phayes/freeport"
 )
 
 const (
@@ -26,35 +26,32 @@ const (
 	recvFmt = "Recv: net %13s, cpu %13s"
 )
 
-func main() {
-	if err := runTest(); err != nil {
-		log.Fatalf("Test failed: %v", err)
-	}
-
-	log.Printf("Test passed!")
+func TestSimpleClientAndServerConcurrently(t *testing.T) {
+	t.Parallel()
+	simpleClientAndServerTest(t, true)
 }
 
-func runTest() error {
+func TestSimpleClientAndServerSequentially(t *testing.T) {
+	t.Parallel()
+	simpleClientAndServerTest(t, false)
+}
+
+func simpleClientAndServerTest(t *testing.T, concurrent bool) {
+	t.Helper()
+
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
 
-	goPath := os.Getenv("GOPATH")
-	if goPath == "" {
-		goPath = build.Default.GOPATH
-	}
-
-	log.Printf("Compiling chukcha")
-	out, err := exec.Command("go", "install", "-v", "github.com/YuriyNasretdinov/chukcha").CombinedOutput()
+	port, err := freeport.GetFreePort()
 	if err != nil {
-		log.Printf("Failed to build: %v", err)
-		return fmt.Errorf("compilation failed: %v (out: %s)", err, string(out))
+		t.Fatalf("Failed to get free port: %v", err)
 	}
 
-	// TODO: make port random
-	port := 7357 // "test" in l33t
+	dbPath, err := os.MkdirTemp(os.TempDir(), "chukcha")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
 
-	// TODO: make db path random
-	dbPath := filepath.Join(os.TempDir(), "chukcha")
-	os.RemoveAll(dbPath)
+	t.Cleanup(func() { os.RemoveAll(dbPath) })
 	os.Mkdir(dbPath, 0777)
 
 	// Initialise the database contents with
@@ -64,15 +61,21 @@ func runTest() error {
 
 	log.Printf("Running chukcha on port %d", port)
 
-	cmd := exec.Command(goPath+"/bin/chukcha", "-dirname="+dbPath, fmt.Sprintf("-port=%d", port))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	cmd.Start()
-	defer cmd.Process.Kill()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- InitAndServe(dbPath, uint(port))
+	}()
 
 	log.Printf("Waiting for the port localhost:%d to open", port)
 	for i := 0; i <= 100; i++ {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("InitAndServe failed: %v", err)
+			}
+		default:
+		}
+
 		timeout := time.Millisecond * 50
 		conn, err := net.DialTimeout("tcp", net.JoinHostPort("localhost", fmt.Sprint(port)), timeout)
 		if err != nil {
@@ -87,19 +90,33 @@ func runTest() error {
 
 	s := client.NewSimple([]string{fmt.Sprintf("http://localhost:%d", port)})
 
-	want, got, err := sendAndReceiveConcurrently(s)
-	if err != nil {
-		return err
+	var want, got int64
+
+	if concurrent {
+		want, got, err = sendAndReceiveConcurrently(s)
+		if err != nil {
+			t.Fatalf("sendAndReceiveConcurrently: %v", err)
+		}
+	} else {
+		want, err = send(s)
+		if err != nil {
+			t.Fatalf("send error: %v", err)
+		}
+
+		sendFinishedCh := make(chan bool, 1)
+		sendFinishedCh <- true
+		got, err = receive(s, sendFinishedCh)
+		if err != nil {
+			t.Fatalf("receive error: %v", err)
+		}
 	}
 
 	// The contents of the chunk that already existed.
 	want += 12345
 
 	if want != got {
-		return fmt.Errorf("the expected sum %d is not equal to the actual sum %d (delivered %1.f%%)", want, got, (float64(got)/float64(want))*100)
+		t.Errorf("the expected sum %d is not equal to the actual sum %d (delivered %1.f%%)", want, got, (float64(got)/float64(want))*100)
 	}
-
-	return nil
 }
 
 type sumAndErr struct {

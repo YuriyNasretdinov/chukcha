@@ -21,8 +21,8 @@ jobs:
     - name: Build
       run: go build -v ./...
 
-    - name: Unit Test
+    - name: Test
       run: go test -v ./...
-    
-    - name: Integration Test
-      run: "go install -v github.com/YuriyNasretdinov/chukcha/cmd/integration-test && ~/go/bin/integration-test"
+
+    - name: Test with a race detector
+      run: go test -race -v ./...
