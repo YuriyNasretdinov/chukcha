@@ -67,5 +67,10 @@ If you really want to use Chukcha, please refer to the simple Go client library 
 # TODOs:
 
 1. Limit for the maximum message size is 1 MiB, otherwise we can no longer serve results from disk because we read from disk in 1 MiB chunks.
-2. Handle situations when we run out of disk space or the number of inodes.
-3. Compute code coverage.
+1. Handle situations when we run out of disk space or the number of inodes.
+1. Compute code coverage.
+1. Introduce categories
+1. Introduce replication
+1. Write replication tests
+1. Make the simple client explicitly acknowledge the data that is read.
+1. Describe the data model.

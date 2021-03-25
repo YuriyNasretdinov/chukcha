@@ -78,7 +78,7 @@ func (s *OnDisk) Write(msgs []byte) error {
 	defer s.writeMu.Unlock()
 
 	if s.lastChunk == "" || (s.lastChunkSize+uint64(len(msgs)) > maxFileChunkSize) {
-		s.lastChunk = fmt.Sprintf("chunk%d", s.lastChunkIdx)
+		s.lastChunk = fmt.Sprintf("chunk%09d", s.lastChunkIdx)
 		s.lastChunkSize = 0
 		s.lastChunkIdx++
 	}

@@ -57,7 +57,7 @@ func simpleClientAndServerTest(t *testing.T, concurrent bool) {
 	// Initialise the database contents with
 	// a not easy-to-guess contents that must
 	// be preserved when writing to this directory.
-	ioutil.WriteFile(filepath.Join(dbPath, "chunk1"), []byte("12345\n"), 0666)
+	ioutil.WriteFile(filepath.Join(dbPath, fmt.Sprintf("chunk%09d", 1)), []byte("12345\n"), 0666)
 
 	log.Printf("Running chukcha on port %d", port)
 
