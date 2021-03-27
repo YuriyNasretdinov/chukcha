@@ -52,6 +52,12 @@ The data durability guarantees are thus the following:
 1. Data is split into chunks and is stored as files on disk. Each server owns the chunks being written into and the ownership of each individual chunk is never changed. The files are replicated to all other servers in the cluster.
 2. Readers explicitly acknowledge data that was read and processed successfully. Readers are responsible for reading the chunks starting with the appropirate offsets. Data can expire after a set period of time if so desired (TODO). By default data does not expire at all.
 
+# Replication
+
+1. Every file in data directory looks like the following: `<category>/<server_name>-chunkXXXXXXXXX`.
+2. Each instance in the cluster must have a unique name and it will be used as a prefix to all files in the category.
+3. Clients will only connect to a single instance and consume chunks from all the servers that has been downloaded to the current instance.
+
 # Installation
 
 1. Install Go at https://golang.org/
@@ -69,8 +75,6 @@ If you really want to use Chukcha, please refer to the simple Go client library 
 1. Limit for the maximum message size is 1 MiB, otherwise we can no longer serve results from disk because we read from disk in 1 MiB chunks.
 1. Handle situations when we run out of disk space or the number of inodes.
 1. Compute code coverage.
-1. Introduce categories
-1. Introduce replication
+1. Introduce replication.
 1. Write replication tests
-1. Make the simple client explicitly acknowledge the data that is read.
 1. Describe the data model.
