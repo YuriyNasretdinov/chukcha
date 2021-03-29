@@ -112,5 +112,4 @@ If you really want to use Chukcha, please refer to the simple Go client library 
 1. Compute code coverage.
 1. Introduce replication.
 1. Write replication tests
-1. Describe the data model.
 1. Rotate chunks not only based on the size but also based on time passed, to allow chunks downloaded from other servers to be forcefully finalised upon failure.
