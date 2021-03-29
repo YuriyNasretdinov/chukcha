@@ -54,9 +54,14 @@ The data durability guarantees are thus the following:
 
 # Replication
 
-1. Every file in data directory looks like the following: `<category>/<server_name>-chunkXXXXXXXXX`.
-2. Each instance in the cluster must have a unique name and it will be used as a prefix to all files in the category.
-3. Clients will only connect to a single instance and consume chunks from all the servers that has been downloaded to the current instance.
+1. Replication is asynchronous by default with an option to wait until the data written is replicated to at least N other servers.
+2. Every file in data directory looks like the following: `<category>/<server_name>-chunkXXXXXXXXX`.
+3. No leaders and followers: all chunks are replicated into all servers in the cluster, all nodes are equal (inspired by ClickHouse replication)
+4. Each instance in the cluster must have a unique name and it will be used as a prefix to all files in the category.
+5. Clients will only connect to a single instance and consume chunks from all the servers that has been downloaded to the current instance.
+6. If a node permanently goes away the last chunk will be marked as complete after a (big) timeout.
+
+![replication](https://user-images.githubusercontent.com/575929/112882377-cc451000-90c4-11eb-97db-d271f8805bf0.png)
 
 # Installation
 
@@ -78,3 +83,4 @@ If you really want to use Chukcha, please refer to the simple Go client library 
 1. Introduce replication.
 1. Write replication tests
 1. Describe the data model.
+1. Rotate chunks not only based on the size but also based on time passed, to allow chunks downloaded from other servers to be forcefully finalised upon failure.
