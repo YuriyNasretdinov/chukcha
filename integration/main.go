@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -8,33 +9,34 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YuriyNasretdinov/chukcha/server/replication"
 	"github.com/YuriyNasretdinov/chukcha/web"
-	"go.etcd.io/etcd/client"
+	"go.etcd.io/etcd/clientv3"
 )
 
 // InitAndServe checks validity of the supplied arguments and starts
 // the web server on the specified port.
-func InitAndServe(etcdAddr string, dirname string, port uint) error {
-	// ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	// defer cancel()
-
-	cfg := client.Config{
-		Endpoints:               strings.Split(etcdAddr, ","),
-		Transport:               client.DefaultTransport,
-		HeaderTimeoutPerRequest: time.Second,
-	}
-	c, err := client.New(cfg)
+func InitAndServe(etcdAddr string, instanceName string, dirname string, listenAddr string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	etcdClient, err := clientv3.New(clientv3.Config{
+		Endpoints:   strings.Split(etcdAddr, ","),
+		DialTimeout: 5 * time.Second,
+	})
 	if err != nil {
-		return fmt.Errorf("creating etcd client: %w", err)
+		return fmt.Errorf("creating new client: %w", err)
 	}
-	kapi := client.NewKeysAPI(c)
+	defer etcdClient.Close()
 
-	/*
-		_, err = kapi.Set(ctx, "test", `test`, nil)
-		if err != nil {
-			return fmt.Errorf("could not set test key to etcd: %v", err)
-		}
-	*/
+	_, err = etcdClient.Put(ctx, "test", "test")
+	if err != nil {
+		return fmt.Errorf("could not set the test key: %w", err)
+	}
+
+	_, err = etcdClient.Put(ctx, "peers/"+instanceName, listenAddr)
+	if err != nil {
+		return fmt.Errorf("could not register peer address in etcd: %w", err)
+	}
 
 	filename := filepath.Join(dirname, "write_test")
 	fp, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR, 0666)
@@ -44,7 +46,7 @@ func InitAndServe(etcdAddr string, dirname string, port uint) error {
 	fp.Close()
 	os.Remove(fp.Name())
 
-	s := web.NewServer(kapi, dirname, port)
+	s := web.NewServer(etcdClient, instanceName, dirname, listenAddr, replication.NewStorage(etcdClient, instanceName))
 
 	log.Printf("Listening connections")
 	return s.Serve()

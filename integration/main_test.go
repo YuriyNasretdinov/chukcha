@@ -76,14 +76,7 @@ func simpleClientAndServerTest(t *testing.T, concurrent bool) {
 	// Initialise the database contents with
 	// a not easy-to-guess contents that must
 	// be preserved when writing to this directory.
-	ioutil.WriteFile(filepath.Join(categoryPath, fmt.Sprintf("chunk%09d", 1)), []byte("12345\n"), 0666)
-
-	log.Printf("Running chukcha on port %d", port)
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- InitAndServe(fmt.Sprintf("http://localhost:%d/", etcdPort), dbPath, uint(port))
-	}()
+	ioutil.WriteFile(filepath.Join(categoryPath, fmt.Sprintf("moscow-chunk%09d", 1)), []byte("12345\n"), 0666)
 
 	etcdArgs := []string{"--data-dir", etcdPath,
 		"--listen-client-urls", fmt.Sprintf("http://localhost:%d", etcdPort),
@@ -99,25 +92,19 @@ func simpleClientAndServerTest(t *testing.T, concurrent bool) {
 
 	t.Cleanup(func() { cmd.Process.Kill() })
 
-	log.Printf("Waiting for the port localhost:%d to open", port)
-	for i := 0; i <= 100; i++ {
-		select {
-		case err := <-errCh:
-			if err != nil {
-				t.Fatalf("InitAndServe failed: %v", err)
-			}
-		default:
-		}
+	log.Printf("Waiting for the etcd port localhost:%d to open", etcdPort)
 
-		timeout := time.Millisecond * 50
-		conn, err := net.DialTimeout("tcp", net.JoinHostPort("localhost", fmt.Sprint(port)), timeout)
-		if err != nil {
-			time.Sleep(timeout)
-			continue
-		}
-		conn.Close()
-		break
-	}
+	waitForPort(t, etcdPort, make(chan error, 1))
+
+	log.Printf("Running chukcha on port %d", port)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- InitAndServe(fmt.Sprintf("http://localhost:%d/", etcdPort), "moscow", dbPath, fmt.Sprintf("localhost:%d", port))
+	}()
+
+	log.Printf("Waiting for the Chukcha port localhost:%d to open", port)
+	waitForPort(t, port, make(chan error, 1))
 
 	log.Printf("Starting the test")
 
@@ -149,6 +136,29 @@ func simpleClientAndServerTest(t *testing.T, concurrent bool) {
 
 	if want != got {
 		t.Errorf("the expected sum %d is not equal to the actual sum %d (delivered %1.f%%)", want, got, (float64(got)/float64(want))*100)
+	}
+}
+
+func waitForPort(t *testing.T, port int, errCh chan error) {
+	t.Helper()
+
+	for i := 0; i <= 100; i++ {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("InitAndServe failed: %v", err)
+			}
+		default:
+		}
+
+		timeout := time.Millisecond * 50
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort("localhost", fmt.Sprint(port)), timeout)
+		if err != nil {
+			time.Sleep(timeout)
+			continue
+		}
+		conn.Close()
+		break
 	}
 }
 

@@ -9,5 +9,5 @@ require (
 	github.com/modern-go/reflect2 v1.0.1 // indirect
 	github.com/phayes/freeport v0.0.0-20180830031419-95f893ade6f2
 	github.com/valyala/fasthttp v1.22.0
-	go.etcd.io/etcd v3.3.25+incompatible
+	go.etcd.io/etcd v0.5.0-alpha.5.0.20210401121737-82eae9227ca0
 )

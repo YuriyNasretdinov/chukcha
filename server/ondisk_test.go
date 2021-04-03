@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,8 +11,8 @@ import (
 func TestInitLastChunkIdx(t *testing.T) {
 	dir := getTempDir(t)
 
-	testCreateFile(t, filepath.Join(dir, "chunk1"))
-	testCreateFile(t, filepath.Join(dir, "chunk10"))
+	testCreateFile(t, filepath.Join(dir, "moscow-chunk1"))
+	testCreateFile(t, filepath.Join(dir, "moscow-chunk10"))
 	srv := testNewOnDisk(t, dir)
 
 	want := uint64(11)
@@ -24,7 +25,7 @@ func TestInitLastChunkIdx(t *testing.T) {
 
 func TestGetFileDescriptor(t *testing.T) {
 	dir := getTempDir(t)
-	testCreateFile(t, filepath.Join(dir, "chunk1"))
+	testCreateFile(t, filepath.Join(dir, "moscow-chunk1"))
 	srv := testNewOnDisk(t, dir)
 
 	testCases := []struct {
@@ -35,25 +36,25 @@ func TestGetFileDescriptor(t *testing.T) {
 	}{
 		{
 			desc:     "Read from already existing file should not fail",
-			filename: "chunk1",
+			filename: "moscow-chunk1",
 			write:    false,
 			wantErr:  false,
 		},
 		{
 			desc:     "Should not overwrite existing files",
-			filename: "chunk1",
+			filename: "moscow-chunk1",
 			write:    true,
 			wantErr:  true,
 		},
 		{
 			desc:     "Should not be to read from files that don't exist",
-			filename: "chunk2",
+			filename: "moscow-chunk2",
 			write:    false,
 			wantErr:  true,
 		},
 		{
 			desc:     "Should be able to create files that don't exist",
-			filename: "chunk2",
+			filename: "moscow-chunk2",
 			write:    true,
 			wantErr:  false,
 		},
@@ -77,7 +78,7 @@ func TestReadWrite(t *testing.T) {
 	srv := testNewOnDisk(t, getTempDir(t))
 
 	want := "one\ntwo\nthree\nfour\n"
-	if err := srv.Write([]byte(want)); err != nil {
+	if err := srv.Write(context.Background(), []byte(want)); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
@@ -121,7 +122,7 @@ func TestAckOfTheLastChunk(t *testing.T) {
 	srv := testNewOnDisk(t, getTempDir(t))
 
 	want := "one\ntwo\nthree\nfour\n"
-	if err := srv.Write([]byte(want)); err != nil {
+	if err := srv.Write(context.Background(), []byte(want)); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
@@ -142,10 +143,10 @@ func TestAckOfTheLastChunk(t *testing.T) {
 func TestAckOfTheCompleteChunk(t *testing.T) {
 	dir := getTempDir(t)
 	srv := testNewOnDisk(t, dir)
-	testCreateFile(t, filepath.Join(dir, "chunk1"))
+	testCreateFile(t, filepath.Join(dir, "moscow-chunk1"))
 
-	if err := srv.Ack("chunk1", 0); err != nil {
-		t.Errorf("Ack(chunk1) = %v, expected no errors", err)
+	if err := srv.Ack("moscow-chunk1", 0); err != nil {
+		t.Errorf("Ack(moscow-chunk1) = %v, expected no errors", err)
 	}
 }
 
@@ -162,10 +163,16 @@ func getTempDir(t *testing.T) string {
 	return dir
 }
 
+type nilHooks struct{}
+
+func (n *nilHooks) BeforeCreatingChunk(ctx context.Context, category string, fileName string) error {
+	return nil
+}
+
 func testNewOnDisk(t *testing.T, dir string) *OnDisk {
 	t.Helper()
 
-	srv, err := NewOnDisk(dir)
+	srv, err := NewOnDisk(dir, "test", "moscow", &nilHooks{})
 	if err != nil {
 		t.Fatalf("NewOnDisk(): %v", err)
 	}
