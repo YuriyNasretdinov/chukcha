@@ -86,6 +86,7 @@ func simpleClientAndServerTest(t *testing.T, concurrent bool) {
 	log.Printf("Running `etcd %s`", strings.Join(etcdArgs, " "))
 
 	cmd := exec.Command("etcd", etcdArgs...)
+	cmd.Env = append(os.Environ(), "ETCD_UNSUPPORTED_ARCH=arm64")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Could not run etcd: %v", err)
 	}
@@ -100,7 +101,13 @@ func simpleClientAndServerTest(t *testing.T, concurrent bool) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- InitAndServe(fmt.Sprintf("http://localhost:%d/", etcdPort), "moscow", dbPath, fmt.Sprintf("localhost:%d", port))
+		errCh <- InitAndServe(InitArgs{
+			EtcdAddr:     []string{fmt.Sprintf("http://localhost:%d/", etcdPort)},
+			InstanceName: "moscow",
+			ClusterName:  "test",
+			DirName:      dbPath,
+			ListenAddr:   fmt.Sprintf("localhost:%d", port),
+		})
 	}()
 
 	log.Printf("Waiting for the Chukcha port localhost:%d to open", port)

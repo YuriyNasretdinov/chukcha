@@ -13,28 +13,28 @@ import (
 	"github.com/YuriyNasretdinov/chukcha/server"
 	"github.com/YuriyNasretdinov/chukcha/server/replication"
 	"github.com/valyala/fasthttp"
-	"go.etcd.io/etcd/clientv3"
 )
 
 // Server implements a web server
 type Server struct {
-	etcd         *clientv3.Client
 	instanceName string
 	dirname      string
 	listenAddr   string
-	replStorage  *replication.Storage
+
+	replClient  *replication.Client
+	replStorage *replication.Storage
 
 	m        sync.Mutex
 	storages map[string]*server.OnDisk
 }
 
 // NewServer creates *Server
-func NewServer(etcd *clientv3.Client, instanceName string, dirname string, listenAddr string, replStorage *replication.Storage) *Server {
+func NewServer(replClient *replication.Client, instanceName string, dirname string, listenAddr string, replStorage *replication.Storage) *Server {
 	return &Server{
-		etcd:         etcd,
 		instanceName: instanceName,
 		dirname:      dirname,
 		listenAddr:   listenAddr,
+		replClient:   replClient,
 		replStorage:  replStorage,
 		storages:     make(map[string]*server.OnDisk),
 	}

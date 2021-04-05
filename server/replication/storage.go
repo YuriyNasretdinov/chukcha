@@ -3,19 +3,16 @@ package replication
 import (
 	"context"
 	"fmt"
-	"strings"
-
-	"go.etcd.io/etcd/clientv3"
 )
 
 // Storage provides hooks for the ondisk storage that will be called to
 // ensure that chunks are replicated.
 type Storage struct {
-	client          *clientv3.Client
+	client          *Client
 	currentInstance string
 }
 
-func NewStorage(client *clientv3.Client, currentInstance string) *Storage {
+func NewStorage(client *Client, currentInstance string) *Storage {
 	return &Storage{
 		client:          client,
 		currentInstance: currentInstance,
@@ -23,20 +20,22 @@ func NewStorage(client *clientv3.Client, currentInstance string) *Storage {
 }
 
 func (s *Storage) BeforeCreatingChunk(ctx context.Context, category string, fileName string) error {
-	resp, err := s.client.Get(ctx, "peers/", clientv3.WithPrefix())
+	peers, err := s.client.ListPeers(ctx)
 	if err != nil {
 		return fmt.Errorf("getting peers from etcd: %v", err)
 	}
 
-	for _, kv := range resp.Kvs {
-		key := strings.TrimPrefix(string(kv.Key), "peers/")
-		if key == s.currentInstance {
+	for _, p := range peers {
+		if p.InstanceName == s.currentInstance {
 			continue
 		}
 
-		_, err = s.client.Put(ctx, "replication/"+key+"/"+category+"/"+fileName, s.currentInstance)
-		if err != nil {
-			return fmt.Errorf("could not write to replication queue for %q (%q): %w", key, string(kv.Value), err)
+		if err := s.client.AddChunkToReplicationQueue(ctx, p.InstanceName, Chunk{
+			Owner:    s.currentInstance,
+			Category: category,
+			FileName: fileName,
+		}); err != nil {
+			return fmt.Errorf("could not write to replication queue for %q (%q): %w", p.InstanceName, p.ListenAddr, err)
 		}
 	}
 
