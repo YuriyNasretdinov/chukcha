@@ -110,6 +110,5 @@ If you really want to use Chukcha, please refer to the simple Go client library 
 1. Limit for the maximum message size is 1 MiB, otherwise we can no longer serve results from disk because we read from disk in 1 MiB chunks.
 1. Handle situations when we run out of disk space or the number of inodes.
 1. Compute code coverage.
-1. Introduce replication.
 1. Write replication tests
 1. Rotate chunks not only based on the size but also based on time passed, to allow chunks downloaded from other servers to be forcefully finalised upon failure.

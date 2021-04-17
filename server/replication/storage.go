@@ -8,11 +8,11 @@ import (
 // Storage provides hooks for the ondisk storage that will be called to
 // ensure that chunks are replicated.
 type Storage struct {
-	client          *Client
+	client          *State
 	currentInstance string
 }
 
-func NewStorage(client *Client, currentInstance string) *Storage {
+func NewStorage(client *State, currentInstance string) *Storage {
 	return &Storage{
 		client:          client,
 		currentInstance: currentInstance,
