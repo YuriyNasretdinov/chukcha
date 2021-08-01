@@ -187,3 +187,32 @@ func testCreateFile(t *testing.T, filename string) {
 		t.Fatalf("could not create file %q: %v", filename, err)
 	}
 }
+
+func TestParseChunkFileName(t *testing.T) {
+	testCases := []struct {
+		filename     string
+		instanceName string
+		chunkIdx     int
+	}{
+		{
+			filename:     "Moscow-chunk0000000",
+			instanceName: "Moscow",
+			chunkIdx:     0,
+		},
+		{
+			filename:     "Chelyabinsk-70-chunk00000123",
+			instanceName: "Chelyabinsk-70",
+			chunkIdx:     123,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.filename, func(t *testing.T) {
+			instance, chunkIdx := parseChunkFileName(tc.filename)
+
+			if instance != tc.instanceName || chunkIdx != tc.chunkIdx {
+				t.Errorf("parseChunkFileName(%q) = %q, %v; want %q, %v", tc.filename, instance, chunkIdx, tc.instanceName, tc.chunkIdx)
+			}
+		})
+	}
+}

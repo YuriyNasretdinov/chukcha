@@ -244,6 +244,30 @@ func (s *OnDisk) Ack(chunk string, size uint64) error {
 	return nil
 }
 
+func parseChunkFileName(filename string) (instance string, chunkIdx int) {
+	idx := strings.LastIndexByte(filename, '-')
+	if idx < 0 {
+		return "", 0
+	}
+
+	instance = filename[0:idx]
+	chunkName := filename[idx+1:]
+
+	var err error
+
+	res := filenameRegexp.FindStringSubmatch(chunkName)
+	if res == nil {
+		return "", 0
+	}
+
+	chunkIdx, err = strconv.Atoi(res[1])
+	if err != nil {
+		return "", 0
+	}
+
+	return instance, chunkIdx
+}
+
 // ListChunks returns the list of current chunks.
 func (s *OnDisk) ListChunks() ([]protocol.Chunk, error) {
 	var res []protocol.Chunk
@@ -253,7 +277,7 @@ func (s *OnDisk) ListChunks() ([]protocol.Chunk, error) {
 		return nil, err
 	}
 
-	for _, di := range dis {
+	for idx, di := range dis {
 		fi, err := di.Info()
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -261,11 +285,24 @@ func (s *OnDisk) ListChunks() ([]protocol.Chunk, error) {
 			return nil, fmt.Errorf("reading directory: %v", err)
 		}
 
+		instanceName, _ := parseChunkFileName(di.Name())
+
 		c := protocol.Chunk{
 			Name:     di.Name(),
-			Complete: (di.Name() != s.lastChunk),
+			Complete: true,
 			Size:     uint64(fi.Size()),
 		}
+
+		// The last chunk for every instance is incomplete, so either
+		// we are at the end of the list, or the next filename belongs
+		// to a different instance. Files are sorted by name already so
+		// we can rely on it.
+		if idx == len(dis)-1 {
+			c.Complete = false
+		} else if nextInstance, _ := parseChunkFileName(dis[idx+1].Name()); nextInstance != instanceName {
+			c.Complete = false
+		}
+
 		res = append(res, c)
 	}
 

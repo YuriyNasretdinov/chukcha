@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -19,6 +20,8 @@ const defaultScratchSize = 64 * 1024
 
 // Simple represents an instance of client connected to a set of Chukcha servers.
 type Simple struct {
+	Debug bool
+
 	addrs    []string
 	cl       *http.Client
 	curChunk protocol.Chunk
@@ -37,7 +40,14 @@ func NewSimple(addrs []string) *Simple {
 func (s *Simple) Send(category string, msgs []byte) error {
 	u := url.Values{}
 	u.Add("category", category)
-	resp, err := s.cl.Post(s.addrs[0]+"/write?"+u.Encode(), "application/octet-stream", bytes.NewReader(msgs))
+
+	url := s.getAddr() + "/write?" + u.Encode()
+
+	if s.Debug {
+		log.Printf("Sending to %s the following messages: %q", url, msgs)
+	}
+
+	resp, err := s.cl.Post(url, "application/octet-stream", bytes.NewReader(msgs))
 	if err != nil {
 		return err
 	}
@@ -69,15 +79,22 @@ func (s *Simple) Process(category string, scratch []byte, processFn func([]byte)
 	for {
 		err := s.process(category, scratch, processFn)
 		if err == errRetry {
+			if s.Debug {
+				log.Printf("Retrying reading category %q", category)
+			}
 			continue
 		}
 		return err
 	}
 }
 
-func (s *Simple) process(category string, scratch []byte, processFn func([]byte) error) error {
+func (s *Simple) getAddr() string {
 	addrIdx := rand.Intn(len(s.addrs))
-	addr := s.addrs[addrIdx]
+	return s.addrs[addrIdx]
+}
+
+func (s *Simple) process(category string, scratch []byte, processFn func([]byte) error) error {
+	addr := s.getAddr()
 
 	if err := s.updateCurrentChunk(category, addr); err != nil {
 		return fmt.Errorf("updateCurrentChunk: %w", err)
@@ -90,6 +107,10 @@ func (s *Simple) process(category string, scratch []byte, processFn func([]byte)
 	u.Add("category", category)
 
 	readURL := fmt.Sprintf("%s/read?%s", addr, u.Encode())
+
+	if s.Debug {
+		log.Printf("Reading from %s", readURL)
+	}
 
 	resp, err := s.cl.Get(readURL)
 	if err != nil {
