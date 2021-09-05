@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/YuriyNasretdinov/chukcha/protocol"
 )
 
 func TestInitLastChunkIdx(t *testing.T) {
@@ -208,7 +210,7 @@ func TestParseChunkFileName(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.filename, func(t *testing.T) {
-			instance, chunkIdx := parseChunkFileName(tc.filename)
+			instance, chunkIdx := protocol.ParseChunkFileName(tc.filename)
 
 			if instance != tc.instanceName || chunkIdx != tc.chunkIdx {
 				t.Errorf("parseChunkFileName(%q) = %q, %v; want %q, %v", tc.filename, instance, chunkIdx, tc.instanceName, tc.chunkIdx)

@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
 	"os"
 	"strings"
@@ -11,10 +13,18 @@ import (
 	"github.com/YuriyNasretdinov/chukcha/client"
 )
 
+const simpleStateFilePath = "/tmp/simple-example-state.json"
+
 func main() {
 	addrs := []string{"http://127.0.0.1:8080", "http://127.0.0.1:8081"}
 
 	cl := client.NewSimple(addrs)
+	if buf, err := ioutil.ReadFile(simpleStateFilePath); err == nil {
+		if err := cl.RestoreSavedState(buf); err != nil {
+			log.Printf("Could not restore saved client state: %v", err)
+		}
+	}
+
 	// cl.Debug = true
 
 	fmt.Printf("Enter the messages into the prompt to send them to one of Chukcha replicas\n")
@@ -26,7 +36,16 @@ func main() {
 
 	for {
 		ln, err := rd.ReadString('\n')
-		if err != nil {
+		if err == io.EOF {
+			buf, err := cl.MarshalState()
+			if err != nil {
+				log.Printf("Failed marshalling client state: %v", err)
+			} else {
+				ioutil.WriteFile(simpleStateFilePath, buf, 0666)
+			}
+			fmt.Println("")
+			return
+		} else if err != nil {
 			log.Fatalf("Failed reading stdin: %v", err)
 		}
 
