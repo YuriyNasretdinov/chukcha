@@ -113,3 +113,4 @@ If you really want to use Chukcha, please refer to the simple Go client library 
 1. Write replication tests
 1. Rotate chunks not only based on the size but also based on time passed, to allow chunks downloaded from other servers to be forcefully finalised upon failure.
 1. When replicating acknowledge requests don't ignore etcd errors, record the errors somewhere so that when etcd has come up we can replay the ack requests on other replicas to clean up space.
+1. Make sure that acknowledge requests don't delete chunks that haven't been downloaded yet. Cancel chunks that are being downloaded that are already acknowledged.
