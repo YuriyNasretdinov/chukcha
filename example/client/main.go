@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -15,7 +16,9 @@ import (
 	"github.com/YuriyNasretdinov/chukcha/client"
 )
 
-const simpleStateFilePath = "/tmp/simple-example-state.json"
+var categoryName = flag.String("category", "stdin", "The category being tested")
+
+const simpleStateFilePath = "/tmp/simple-example-state-%s.json"
 
 type readResult struct {
 	ln  string
@@ -23,10 +26,12 @@ type readResult struct {
 }
 
 func main() {
+	flag.Parse()
+
 	addrs := []string{"http://127.0.0.1:8080", "http://127.0.0.1:8081"}
 
 	cl := client.NewSimple(addrs)
-	if buf, err := ioutil.ReadFile(simpleStateFilePath); err == nil {
+	if buf, err := ioutil.ReadFile(fmt.Sprintf(simpleStateFilePath, *categoryName)); err == nil {
 		if err := cl.RestoreSavedState(buf); err != nil {
 			log.Printf("Could not restore saved client state: %v", err)
 		}
@@ -77,7 +82,7 @@ func main() {
 			log.Fatalf("The line is incomplete: %q", ln)
 		}
 
-		if err := cl.Send("stdin", []byte(ln)); err != nil {
+		if err := cl.Send(*categoryName, []byte(ln)); err != nil {
 			log.Printf("Failed sending data to Chukcha: %v", err)
 		}
 
@@ -90,7 +95,7 @@ func saveState(cl *client.Simple) {
 	if err != nil {
 		log.Printf("Failed marshalling client state: %v", err)
 	} else {
-		ioutil.WriteFile(simpleStateFilePath, buf, 0666)
+		ioutil.WriteFile(fmt.Sprintf(simpleStateFilePath, *categoryName), buf, 0666)
 	}
 	fmt.Println("")
 }
@@ -99,7 +104,7 @@ func printContiniously(cl *client.Simple) {
 	scratch := make([]byte, 1024*1024)
 
 	for {
-		cl.Process("stdin", scratch, func(b []byte) error {
+		cl.Process(*categoryName, scratch, func(b []byte) error {
 			fmt.Printf("\n")
 			log.Printf("BATCH: %s", b)
 			fmt.Printf("> ")
