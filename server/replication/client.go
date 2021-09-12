@@ -39,6 +39,7 @@ type Client struct {
 type DirectWriter interface {
 	Stat(category string, fileName string) (size int64, exists bool, err error)
 	WriteDirect(category string, fileName string, contents []byte) error
+	AckDirect(ctx context.Context, category string, chunk string) error
 }
 
 // NewClient initialises the replication client.
@@ -55,12 +56,32 @@ func NewClient(st *State, wr DirectWriter, instanceName string) *Client {
 }
 
 func (c *Client) Loop(ctx context.Context) {
+	go c.acknowledgeLoop(ctx)
+	c.replicationLoop(ctx)
+}
+
+func (c *Client) acknowledgeLoop(ctx context.Context) {
+	for ch := range c.state.WatchAcknowledgeQueue(ctx, c.instanceName) {
+		log.Printf("acknowledging chunk %+v", ch)
+
+		// TODO: handle errors better
+		if err := c.wr.AckDirect(ctx, ch.Category, ch.FileName); err != nil {
+			log.Printf("Could not ack chunk %+v from the acknowledge queue: %v", ch, err)
+		}
+
+		if err := c.state.DeleteChunkFromAcknowledgeQueue(ctx, c.instanceName, ch); err != nil {
+			log.Printf("Could not delete chunk %+v from the acknowledge queue: %v", ch, err)
+		}
+	}
+}
+
+func (c *Client) replicationLoop(ctx context.Context) {
 	for ch := range c.state.WatchReplicationQueue(ctx, c.instanceName) {
 		c.downloadChunk(ch)
 
 		// TODO: handle errors
 		if err := c.state.DeleteChunkFromReplicationQueue(ctx, c.instanceName, ch); err != nil {
-			log.Printf("could not delete chunk %+v from the replication queue: %v", ch, err)
+			log.Printf("Could not delete chunk %+v from the replication queue: %v", ch, err)
 		}
 	}
 }

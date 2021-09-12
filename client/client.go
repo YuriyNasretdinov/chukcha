@@ -36,7 +36,7 @@ type ReadOffset struct {
 }
 
 type state struct {
-	Offsets map[string]ReadOffset
+	Offsets map[string]*ReadOffset
 }
 
 // NewSimple creates a new client for the Chukcha server.
@@ -44,7 +44,7 @@ func NewSimple(addrs []string) *Simple {
 	return &Simple{
 		addrs: addrs,
 		cl:    &http.Client{},
-		st:    &state{Offsets: make(map[string]ReadOffset)},
+		st:    &state{Offsets: make(map[string]*ReadOffset)},
 	}
 }
 
@@ -180,7 +180,7 @@ func (s *Simple) process(addr, instance, category string, scratch []byte, proces
 	// 0 bytes read but no errors means the end of file by convention.
 	if b.Len() == 0 {
 		if !curCh.CurChunk.Complete {
-			if err := s.updateCurrentChunkCompleteStatus(instance, category, addr); err != nil {
+			if err := s.updateCurrentChunkCompleteStatus(curCh, instance, category, addr); err != nil {
 				return fmt.Errorf("updateCurrentChunkCompleteStatus: %v", err)
 			}
 
@@ -215,14 +215,12 @@ func (s *Simple) process(addr, instance, category string, scratch []byte, proces
 		curCh.CurChunk = protocol.Chunk{}
 		curCh.Off = 0
 
-		s.st.Offsets[instance] = curCh
 		return errRetry
 	}
 
 	err = processFn(b.Bytes())
 	if err == nil {
 		curCh.Off += uint64(b.Len())
-		s.st.Offsets[instance] = curCh
 	}
 
 	return err
@@ -257,7 +255,15 @@ func (s *Simple) updateCurrentChunks(category, addr string) error {
 	}
 
 	for instance, chunks := range chunksByInstance {
-		curChunk := s.st.Offsets[instance]
+		curChunk, exists := s.st.Offsets[instance]
+		if !exists {
+			curChunk = &ReadOffset{}
+		}
+
+		// Name will be empty in two cases:
+		//  1. It is the first time we try to read from this instance.
+		//  2. We read the latest chunk until the end and need to start
+		//     reading a new one.
 		if curChunk.CurChunk.Name == "" {
 			curChunk.CurChunk = s.getOldestChunk(chunks)
 			curChunk.Off = 0
@@ -283,13 +289,11 @@ func (s *Simple) getOldestChunk(chunks []protocol.Chunk) protocol.Chunk {
 	return chunks[0]
 }
 
-func (s *Simple) updateCurrentChunkCompleteStatus(instance, category, addr string) error {
+func (s *Simple) updateCurrentChunkCompleteStatus(curCh *ReadOffset, instance, category, addr string) error {
 	chunks, err := s.ListChunks(category, addr)
 	if err != nil {
 		return fmt.Errorf("listChunks failed: %v", err)
 	}
-
-	curCh := s.st.Offsets[instance]
 
 	// We need to prioritise the chunks that are complete
 	// so that we ack them.
@@ -305,7 +309,6 @@ func (s *Simple) updateCurrentChunkCompleteStatus(instance, category, addr strin
 
 		if c.Name == curCh.CurChunk.Name {
 			curCh.CurChunk = c
-			s.st.Offsets[instance] = curCh
 			return nil
 		}
 	}

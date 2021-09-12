@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,6 +21,7 @@ var errBufTooSmall = errors.New("the buffer is too small to contain a single mes
 
 type StorageHooks interface {
 	BeforeCreatingChunk(ctx context.Context, category string, fileName string) error
+	BeforeAcknowledgeChunk(ctx context.Context, category string, fileName string) error
 }
 
 // OnDisk stores all the data on disk.
@@ -205,7 +207,7 @@ func (s *OnDisk) isLastChunk(chunk string) bool {
 }
 
 // Ack marks the current chunk as done and deletes it's contents.
-func (s *OnDisk) Ack(chunk string, size uint64) error {
+func (s *OnDisk) Ack(ctx context.Context, chunk string, size uint64) error {
 	if s.isLastChunk(chunk) {
 		return fmt.Errorf("could not delete incomplete chunk %q", chunk)
 	}
@@ -220,6 +222,24 @@ func (s *OnDisk) Ack(chunk string, size uint64) error {
 	if uint64(fi.Size()) > size {
 		return fmt.Errorf("file was not fully processed: the supplied processed size %d is smaller than the chunk file size %d", size, fi.Size())
 	}
+
+	// We ignore the error here so that we can continue reading chunks when etcd is down.
+	if err := s.repl.BeforeAcknowledgeChunk(ctx, s.category, chunk); err != nil {
+		log.Printf("Failed to replicate ack request: %v", err)
+	}
+
+	if err := os.Remove(chunkFilename); err != nil {
+		return fmt.Errorf("removing %q: %v", chunk, err)
+	}
+
+	s.forgetFileDescriptor(chunk)
+	return nil
+}
+
+// AckDirect is a method that is called from replication to replay acknowledge
+// requests on the replica side.
+func (s *OnDisk) AckDirect(chunk string) error {
+	chunkFilename := filepath.Join(s.dirname, chunk)
 
 	if err := os.Remove(chunkFilename); err != nil {
 		return fmt.Errorf("removing %q: %v", chunk, err)

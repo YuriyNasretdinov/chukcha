@@ -116,7 +116,7 @@ func (s *Server) ackHandler(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := storage.Ack(string(chunk), uint64(size)); err != nil {
+	if err := storage.Ack(ctx, string(chunk), uint64(size)); err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.WriteString(err.Error())
 	}

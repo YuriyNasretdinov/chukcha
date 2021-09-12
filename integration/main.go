@@ -99,6 +99,15 @@ func (c *OnDiskCreator) WriteDirect(category string, fileName string, contents [
 	return inst.WriteDirect(fileName, contents)
 }
 
+func (c *OnDiskCreator) AckDirect(ctx context.Context, category string, chunk string) error {
+	inst, err := c.Get(category)
+	if err != nil {
+		return err
+	}
+
+	return inst.AckDirect(chunk)
+}
+
 func (c *OnDiskCreator) Get(category string) (*server.OnDisk, error) {
 	c.m.Lock()
 	defer c.m.Unlock()
