@@ -79,6 +79,8 @@ type OnDiskCreator struct {
 	storages map[string]*server.OnDisk
 }
 
+// Stat returns information about the chunk: whether or not it exists and it's size.
+// If file does not exist no error is returned.
 func (c *OnDiskCreator) Stat(category string, fileName string) (size int64, exists bool, err error) {
 	st, err := os.Stat(filepath.Join(c.dirName, category, fileName))
 	if errors.Is(err, os.ErrNotExist) {

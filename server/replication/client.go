@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/YuriyNasretdinov/chukcha/client"
@@ -33,7 +34,10 @@ type Client struct {
 	instanceName string
 	httpCl       *http.Client
 	s            *client.Simple
-	perCategory  map[string]*CategoryDownloader
+
+	// mu protects perCategory
+	mu          sync.Mutex
+	perCategory map[string]*CategoryDownloader
 }
 
 type CategoryDownloader struct {
@@ -44,6 +48,12 @@ type CategoryDownloader struct {
 	instanceName string
 	httpCl       *http.Client
 	s            *client.Simple
+
+	// Information about the current chunk being downloaded.
+	curMu          sync.Mutex
+	curChunk       Chunk
+	curChunkCancel context.CancelFunc
+	curChunkDone   chan bool
 }
 
 // DirectWriter writes to underlying storage directly for replication purposes.
@@ -76,6 +86,8 @@ func (c *Client) acknowledgeLoop(ctx context.Context) {
 	for ch := range c.state.WatchAcknowledgeQueue(ctx, c.instanceName) {
 		log.Printf("acknowledging chunk %+v", ch)
 
+		c.ensureChunkIsNotBeingDownloaded(ch)
+
 		// TODO: handle errors better
 		if err := c.wr.AckDirect(ctx, ch.Category, ch.FileName); err != nil {
 			log.Printf("Could not ack chunk %+v from the acknowledge queue: %v", ch, err)
@@ -85,6 +97,38 @@ func (c *Client) acknowledgeLoop(ctx context.Context) {
 			log.Printf("Could not delete chunk %+v from the acknowledge queue: %v", ch, err)
 		}
 	}
+}
+
+// We only care about the situation when the chunk is being downloaded
+// while we are deleting it from local disk, because:
+//
+// 1. If we finished downloading chunk before ack, it is ok, no race condition here.
+// 2. If we try to download chunk after ack is done, the download request will fail
+//    because the chunk already does not exist at the source (because it was acknowledged).
+func (c *Client) ensureChunkIsNotBeingDownloaded(ch Chunk) {
+	c.mu.Lock()
+	downloader, ok := c.perCategory[ch.Category]
+	c.mu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	downloader.curMu.Lock()
+	downloadedChunk := downloader.curChunk
+	cancelFunc := downloader.curChunkCancel
+	doneCh := downloader.curChunkDone
+	downloader.curMu.Unlock()
+
+	if downloadedChunk.Category != ch.Category || downloadedChunk.FileName != ch.FileName || downloadedChunk.Owner != ch.Owner {
+		return
+	}
+
+	// cancel func does nothing if context is already finished and cancelled
+	cancelFunc()
+
+	// write to doneCh is guaranteed after chunk finished downloading
+	<-doneCh
 }
 
 func (c *Client) replicationLoop(ctx context.Context) {
@@ -101,7 +145,9 @@ func (c *Client) replicationLoop(ctx context.Context) {
 			}
 			go downloader.Loop(ctx)
 
+			c.mu.Lock()
 			c.perCategory[ch.Category] = downloader
+			c.mu.Unlock()
 		}
 
 		downloader.eventsCh <- ch
@@ -114,7 +160,7 @@ func (c *CategoryDownloader) Loop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case ch := <-c.eventsCh:
-			c.downloadChunk(ch)
+			c.downloadChunk(ctx, ch)
 
 			// TODO: handle errors
 			if err := c.state.DeleteChunkFromReplicationQueue(ctx, c.instanceName, ch); err != nil {
@@ -124,18 +170,49 @@ func (c *CategoryDownloader) Loop(ctx context.Context) {
 	}
 }
 
-func (c *CategoryDownloader) downloadChunk(ch Chunk) {
+func (c *CategoryDownloader) downloadChunk(parentCtx context.Context, ch Chunk) {
 	log.Printf("downloading chunk %+v", ch)
 	defer log.Printf("finished downloading chunk %+v", ch)
 
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
+	c.curMu.Lock()
+	c.curChunk = ch
+	c.curChunkCancel = cancel
+	c.curChunkDone = make(chan bool)
+	c.curMu.Unlock()
+
+	defer func() {
+		// Let everyone how is interested know that we no longer processing
+		// this chunk.
+		close(c.curChunkDone)
+
+		c.curMu.Lock()
+		c.curChunk = Chunk{}
+		c.curChunkCancel = nil
+		c.curChunkDone = nil
+		c.curMu.Unlock()
+	}()
+
 	for {
-		err := c.downloadChunkIteration(ch)
-		if err == errIncomplete {
+		err := c.downloadChunkIteration(ctx, ch)
+		if errors.Is(err, errNotFound) {
+			log.Printf("got a not found error while downloading chunk %+v, skipping chunk", ch)
+			return
+		} else if errors.Is(err, errIncomplete) {
 			time.Sleep(pollInterval)
 			continue
 		} else if err != nil {
-			// TODO: exponential backoff
 			log.Printf("got an error while downloading chunk %+v: %v", ch, err)
+
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			// TODO: exponential backoff
 			time.Sleep(retryTimeout)
 			continue
 		}
@@ -144,18 +221,18 @@ func (c *CategoryDownloader) downloadChunk(ch Chunk) {
 	}
 }
 
-func (c *CategoryDownloader) downloadChunkIteration(ch Chunk) error {
+func (c *CategoryDownloader) downloadChunkIteration(ctx context.Context, ch Chunk) error {
 	size, _, err := c.wr.Stat(ch.Category, ch.FileName)
 	if err != nil {
 		return fmt.Errorf("getting file stat: %v", err)
 	}
 
-	addr, err := c.listenAddrForChunk(ch)
+	addr, err := c.listenAddrForChunk(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("getting listen address: %v", err)
 	}
 
-	info, err := c.getChunkInfo(addr, ch)
+	info, err := c.getChunkInfo(ctx, addr, ch)
 	if err == errNotFound {
 		log.Printf("chunk not found at %q", addr)
 		return nil
@@ -170,9 +247,9 @@ func (c *CategoryDownloader) downloadChunkIteration(ch Chunk) error {
 		return nil
 	}
 
-	buf, err := c.downloadPart(addr, ch, size)
+	buf, err := c.downloadPart(ctx, addr, ch, size)
 	if err != nil {
-		return fmt.Errorf("downloading chunk: %v", err)
+		return fmt.Errorf("downloading chunk: %w", err)
 	}
 
 	if err := c.wr.WriteDirect(ch.Category, ch.FileName, buf); err != nil {
@@ -186,10 +263,7 @@ func (c *CategoryDownloader) downloadChunkIteration(ch Chunk) error {
 	return nil
 }
 
-func (c *CategoryDownloader) listenAddrForChunk(ch Chunk) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultClientTimeout)
-	defer cancel()
-
+func (c *CategoryDownloader) listenAddrForChunk(ctx context.Context, ch Chunk) (string, error) {
 	peers, err := c.state.ListPeers(ctx)
 	if err != nil {
 		return "", err
@@ -210,8 +284,8 @@ func (c *CategoryDownloader) listenAddrForChunk(ch Chunk) (string, error) {
 	return "http://" + addr, nil
 }
 
-func (c *CategoryDownloader) getChunkInfo(addr string, curCh Chunk) (protocol.Chunk, error) {
-	chunks, err := c.s.ListChunks(curCh.Category, addr)
+func (c *CategoryDownloader) getChunkInfo(ctx context.Context, addr string, curCh Chunk) (protocol.Chunk, error) {
+	chunks, err := c.s.ListChunks(ctx, curCh.Category, addr, true)
 	if err != nil {
 		return protocol.Chunk{}, err
 	}
@@ -225,21 +299,37 @@ func (c *CategoryDownloader) getChunkInfo(addr string, curCh Chunk) (protocol.Ch
 	return protocol.Chunk{}, errNotFound
 }
 
-func (c *CategoryDownloader) downloadPart(addr string, ch Chunk, off int64) ([]byte, error) {
+func (c *CategoryDownloader) downloadPart(ctx context.Context, addr string, ch Chunk, off int64) ([]byte, error) {
 	u := url.Values{}
 	u.Add("off", strconv.Itoa(int(off)))
 	u.Add("maxSize", strconv.Itoa(batchSize))
 	u.Add("chunk", ch.FileName)
 	u.Add("category", ch.Category)
+	u.Add("from_replication", "1")
 
 	readURL := fmt.Sprintf("%s/read?%s", addr, u.Encode())
 
-	resp, err := c.httpCl.Get(readURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", readURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating http request: %w", err)
+	}
+
+	resp, err := c.httpCl.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("read %q: %v", readURL, err)
 	}
 
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		defer io.Copy(io.Discard, resp.Body)
+
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, errNotFound
+		}
+
+		return nil, fmt.Errorf("http status code %d", resp.StatusCode)
+	}
 
 	var b bytes.Buffer
 	_, err = io.Copy(&b, resp.Body)

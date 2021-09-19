@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -41,6 +42,8 @@ func simpleClientAndServerTest(t *testing.T, concurrent bool) {
 	t.Helper()
 
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
+
+	ctx := context.Background()
 
 	etcdPeerPort, err := freeport.GetFreePort()
 	if err != nil {
@@ -120,19 +123,19 @@ func simpleClientAndServerTest(t *testing.T, concurrent bool) {
 	var want, got int64
 
 	if concurrent {
-		want, got, err = sendAndReceiveConcurrently(s)
+		want, got, err = sendAndReceiveConcurrently(ctx, s)
 		if err != nil {
 			t.Fatalf("sendAndReceiveConcurrently: %v", err)
 		}
 	} else {
-		want, err = send(s)
+		want, err = send(ctx, s)
 		if err != nil {
 			t.Fatalf("send error: %v", err)
 		}
 
 		sendFinishedCh := make(chan bool, 1)
 		sendFinishedCh <- true
-		got, err = receive(s, sendFinishedCh)
+		got, err = receive(ctx, s, sendFinishedCh)
 		if err != nil {
 			t.Fatalf("receive error: %v", err)
 		}
@@ -174,13 +177,13 @@ type sumAndErr struct {
 	err error
 }
 
-func sendAndReceiveConcurrently(s *client.Simple) (want, got int64, err error) {
+func sendAndReceiveConcurrently(ctx context.Context, s *client.Simple) (want, got int64, err error) {
 	wantCh := make(chan sumAndErr, 1)
 	gotCh := make(chan sumAndErr, 1)
 	sendFinishedCh := make(chan bool, 1)
 
 	go func() {
-		want, err := send(s)
+		want, err := send(ctx, s)
 		log.Printf("Send finished")
 
 		wantCh <- sumAndErr{
@@ -191,7 +194,7 @@ func sendAndReceiveConcurrently(s *client.Simple) (want, got int64, err error) {
 	}()
 
 	go func() {
-		got, err := receive(s, sendFinishedCh)
+		got, err := receive(ctx, s, sendFinishedCh)
 		gotCh <- sumAndErr{
 			sum: got,
 			err: err,
@@ -211,7 +214,7 @@ func sendAndReceiveConcurrently(s *client.Simple) (want, got int64, err error) {
 	return wantRes.sum, gotRes.sum, err
 }
 
-func send(s *client.Simple) (sum int64, err error) {
+func send(ctx context.Context, s *client.Simple) (sum int64, err error) {
 	sendStart := time.Now()
 	var networkTime time.Duration
 	var sentBytes int
@@ -230,7 +233,7 @@ func send(s *client.Simple) (sum int64, err error) {
 
 		if len(buf) >= maxBufferSize {
 			start := time.Now()
-			if err := s.Send("numbers", buf); err != nil {
+			if err := s.Send(ctx, "numbers", buf); err != nil {
 				return 0, err
 			}
 			networkTime += time.Since(start)
@@ -242,7 +245,7 @@ func send(s *client.Simple) (sum int64, err error) {
 
 	if len(buf) != 0 {
 		start := time.Now()
-		if err := s.Send("numbers", buf); err != nil {
+		if err := s.Send(ctx, "numbers", buf); err != nil {
 			return 0, err
 		}
 		networkTime += time.Since(start)
@@ -254,7 +257,7 @@ func send(s *client.Simple) (sum int64, err error) {
 
 var randomTempErr = errors.New("a random temporary error occurred")
 
-func receive(s *client.Simple, sendFinishedCh chan bool) (sum int64, err error) {
+func receive(ctx context.Context, s *client.Simple, sendFinishedCh chan bool) (sum int64, err error) {
 	buf := make([]byte, maxBufferSize)
 
 	var parseTime time.Duration
@@ -279,7 +282,7 @@ func receive(s *client.Simple, sendFinishedCh chan bool) (sum int64, err error) 
 		default:
 		}
 
-		err := s.Process("numbers", buf, func(res []byte) error {
+		err := s.Process(ctx, "numbers", buf, func(res []byte) error {
 			if loopCnt%10 == 0 {
 				return randomTempErr
 			}

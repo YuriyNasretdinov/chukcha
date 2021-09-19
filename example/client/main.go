@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -28,6 +29,8 @@ type readResult struct {
 func main() {
 	flag.Parse()
 
+	ctx := context.Background()
+
 	addrs := []string{"http://127.0.0.1:8080", "http://127.0.0.1:8081"}
 
 	cl := client.NewSimple(addrs)
@@ -41,7 +44,7 @@ func main() {
 
 	fmt.Printf("Enter the messages into the prompt to send them to one of Chukcha replicas\n")
 
-	go printContiniously(cl)
+	go printContiniously(ctx, cl)
 
 	rd := bufio.NewReader(os.Stdin)
 	fmt.Printf("> ")
@@ -82,7 +85,7 @@ func main() {
 			log.Fatalf("The line is incomplete: %q", ln)
 		}
 
-		if err := cl.Send(*categoryName, []byte(ln)); err != nil {
+		if err := cl.Send(ctx, *categoryName, []byte(ln)); err != nil {
 			log.Printf("Failed sending data to Chukcha: %v", err)
 		}
 
@@ -100,11 +103,11 @@ func saveState(cl *client.Simple) {
 	fmt.Println("")
 }
 
-func printContiniously(cl *client.Simple) {
+func printContiniously(ctx context.Context, cl *client.Simple) {
 	scratch := make([]byte, 1024*1024)
 
 	for {
-		cl.Process(*categoryName, scratch, func(b []byte) error {
+		cl.Process(ctx, *categoryName, scratch, func(b []byte) error {
 			fmt.Printf("\n")
 			log.Printf("BATCH: %s", b)
 			fmt.Printf("> ")

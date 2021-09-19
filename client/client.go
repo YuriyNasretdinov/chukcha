@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,7 +62,7 @@ func (s *Simple) RestoreSavedState(buf []byte) error {
 }
 
 // Send sends the messages to the Chukcha servers.
-func (s *Simple) Send(category string, msgs []byte) error {
+func (s *Simple) Send(ctx context.Context, category string, msgs []byte) error {
 	u := url.Values{}
 	u.Add("category", category)
 
@@ -71,7 +72,13 @@ func (s *Simple) Send(category string, msgs []byte) error {
 		log.Printf("Sending to %s the following messages: %q", url, msgs)
 	}
 
-	resp, err := s.cl.Post(url, "application/octet-stream", bytes.NewReader(msgs))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(msgs))
+	if err != nil {
+		return fmt.Errorf("making http request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	resp, err := s.cl.Do(req)
 	if err != nil {
 		return err
 	}
@@ -95,7 +102,7 @@ var errRetry = errors.New("please retry the request")
 // The scratch buffer can be used to read the data.
 // The read offset will advance only if processFn()
 // returns no errors for the data being processed.
-func (s *Simple) Process(category string, scratch []byte, processFn func([]byte) error) error {
+func (s *Simple) Process(ctx context.Context, category string, scratch []byte, processFn func([]byte) error) error {
 	if scratch == nil {
 		scratch = make([]byte, defaultScratchSize)
 	}
@@ -104,13 +111,13 @@ func (s *Simple) Process(category string, scratch []byte, processFn func([]byte)
 
 	// If there are no servers known, populate the list of current chunks.
 	if len(s.st.Offsets) == 0 {
-		if err := s.updateCurrentChunks(category, addr); err != nil {
+		if err := s.updateCurrentChunks(ctx, category, addr); err != nil {
 			return fmt.Errorf("updateCurrentChunk: %w", err)
 		}
 	}
 
 	for instance := range s.st.Offsets {
-		err := s.processInstance(addr, instance, category, scratch, processFn)
+		err := s.processInstance(ctx, addr, instance, category, scratch, processFn)
 		if errors.Is(err, io.EOF) {
 			continue
 		}
@@ -121,13 +128,13 @@ func (s *Simple) Process(category string, scratch []byte, processFn func([]byte)
 	return io.EOF
 }
 
-func (s *Simple) processInstance(addr, instance, category string, scratch []byte, processFn func([]byte) error) error {
+func (s *Simple) processInstance(ctx context.Context, addr, instance, category string, scratch []byte, processFn func([]byte) error) error {
 	for {
-		if err := s.updateCurrentChunks(category, addr); err != nil {
+		if err := s.updateCurrentChunks(ctx, category, addr); err != nil {
 			return fmt.Errorf("updateCurrentChunk: %w", err)
 		}
 
-		err := s.process(addr, instance, category, scratch, processFn)
+		err := s.process(ctx, addr, instance, category, scratch, processFn)
 		if err == errRetry {
 			if s.Debug {
 				log.Printf("Retrying reading category %q", category)
@@ -143,7 +150,7 @@ func (s *Simple) getAddr() string {
 	return s.addrs[addrIdx]
 }
 
-func (s *Simple) process(addr, instance, category string, scratch []byte, processFn func([]byte) error) error {
+func (s *Simple) process(ctx context.Context, addr, instance, category string, scratch []byte, processFn func([]byte) error) error {
 	curCh := s.st.Offsets[instance]
 
 	u := url.Values{}
@@ -180,7 +187,7 @@ func (s *Simple) process(addr, instance, category string, scratch []byte, proces
 	// 0 bytes read but no errors means the end of file by convention.
 	if b.Len() == 0 {
 		if !curCh.CurChunk.Complete {
-			if err := s.updateCurrentChunkCompleteStatus(curCh, instance, category, addr); err != nil {
+			if err := s.updateCurrentChunkCompleteStatus(ctx, curCh, instance, category, addr); err != nil {
 				return fmt.Errorf("updateCurrentChunkCompleteStatus: %v", err)
 			}
 
@@ -226,8 +233,8 @@ func (s *Simple) process(addr, instance, category string, scratch []byte, proces
 	return err
 }
 
-func (s *Simple) updateCurrentChunks(category, addr string) error {
-	chunks, err := s.ListChunks(category, addr)
+func (s *Simple) updateCurrentChunks(ctx context.Context, category, addr string) error {
+	chunks, err := s.ListChunks(ctx, category, addr, false)
 	if err != nil {
 		return fmt.Errorf("listChunks failed: %v", err)
 	}
@@ -289,8 +296,8 @@ func (s *Simple) getOldestChunk(chunks []protocol.Chunk) protocol.Chunk {
 	return chunks[0]
 }
 
-func (s *Simple) updateCurrentChunkCompleteStatus(curCh *ReadOffset, instance, category, addr string) error {
-	chunks, err := s.ListChunks(category, addr)
+func (s *Simple) updateCurrentChunkCompleteStatus(ctx context.Context, curCh *ReadOffset, instance, category, addr string) error {
+	chunks, err := s.ListChunks(ctx, category, addr, false)
 	if err != nil {
 		return fmt.Errorf("listChunks failed: %v", err)
 	}
@@ -318,13 +325,21 @@ func (s *Simple) updateCurrentChunkCompleteStatus(curCh *ReadOffset, instance, c
 
 // ListChunks returns the list of chunks for the appropriate Chukcha instance.
 // TODO: extract this into a separate client.
-func (s *Simple) ListChunks(category, addr string) ([]protocol.Chunk, error) {
+func (s *Simple) ListChunks(ctx context.Context, category, addr string, fromReplication bool) ([]protocol.Chunk, error) {
 	u := url.Values{}
 	u.Add("category", category)
+	if fromReplication {
+		u.Add("from_replication", "1")
+	}
 
 	listURL := fmt.Sprintf("%s/listChunks?%s", addr, u.Encode())
 
-	resp, err := s.cl.Get(listURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", listURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating new http request: %w", err)
+	}
+
+	resp, err := s.cl.Do(req)
 	if err != nil {
 		return nil, err
 	}

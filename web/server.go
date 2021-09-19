@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -123,6 +124,19 @@ func (s *Server) ackHandler(ctx *fasthttp.RequestCtx) {
 }
 
 func (s *Server) readHandler(ctx *fasthttp.RequestCtx) {
+	chunk := ctx.QueryArgs().Peek("chunk")
+	if len(chunk) == 0 {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.WriteString("bad `chunk` GET param: chunk name must be provided")
+		return
+	}
+
+	fromReplication, _ := ctx.QueryArgs().GetUint("from_replication")
+	if fromReplication == 1 {
+		// log.Printf("sleeping for 8 seconds for request from replication for chunk %v", string(chunk))
+		// time.Sleep(time.Second * 8)
+	}
+
 	storage, err := s.getStorageForCategory(string(ctx.QueryArgs().Peek("category")))
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
@@ -144,16 +158,13 @@ func (s *Server) readHandler(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	chunk := ctx.QueryArgs().Peek("chunk")
-	if len(chunk) == 0 {
-		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		ctx.WriteString("bad `chunk` GET param: chunk name must be provided")
-		return
-	}
-
 	err = storage.Read(string(chunk), uint64(off), uint64(maxSize), ctx)
 	if err != nil && err != io.EOF {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		if os.IsNotExist(err) {
+			ctx.SetStatusCode(fasthttp.StatusNotFound)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		}
 		ctx.WriteString(err.Error())
 		return
 	}
@@ -165,6 +176,12 @@ func (s *Server) listChunksHandler(ctx *fasthttp.RequestCtx) {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 		ctx.WriteString(err.Error())
 		return
+	}
+
+	fromReplication, _ := ctx.QueryArgs().GetUint("from_replication")
+	if fromReplication == 1 {
+		// log.Printf("sleeping for 8 seconds for request from replication for listing chunks")
+		// time.Sleep(time.Second * 8)
 	}
 
 	chunks, err := storage.ListChunks()
