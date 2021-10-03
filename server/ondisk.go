@@ -225,6 +225,7 @@ func (s *OnDisk) Ack(ctx context.Context, chunk string, size uint64) error {
 
 	// We ignore the error here so that we can continue reading chunks when etcd is down.
 	if err := s.repl.BeforeAcknowledgeChunk(ctx, s.category, chunk); err != nil {
+		// TODO: remember the ack request still
 		log.Printf("Failed to replicate ack request: %v", err)
 	}
 
@@ -241,7 +242,7 @@ func (s *OnDisk) Ack(ctx context.Context, chunk string, size uint64) error {
 func (s *OnDisk) AckDirect(chunk string) error {
 	chunkFilename := filepath.Join(s.dirname, chunk)
 
-	if err := os.Remove(chunkFilename); err != nil {
+	if err := os.Remove(chunkFilename); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("removing %q: %v", chunk, err)
 	}
 

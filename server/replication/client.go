@@ -256,7 +256,12 @@ func (c *CategoryDownloader) downloadChunkIteration(ctx context.Context, ch Chun
 		return fmt.Errorf("writing chunk: %v", err)
 	}
 
-	if !info.Complete {
+	size, _, err = c.wr.Stat(ch.Category, ch.FileName)
+	if err != nil {
+		return fmt.Errorf("getting file stat: %v", err)
+	}
+
+	if uint64(size) < info.Size || !info.Complete {
 		return errIncomplete
 	}
 
