@@ -167,11 +167,11 @@ func getTempDir(t *testing.T) string {
 
 type nilHooks struct{}
 
-func (n *nilHooks) BeforeCreatingChunk(ctx context.Context, category string, fileName string) error {
+func (n *nilHooks) AfterCreatingChunk(ctx context.Context, category string, fileName string) error {
 	return nil
 }
 
-func (n *nilHooks) BeforeAcknowledgeChunk(ctx context.Context, category string, fileName string) error {
+func (n *nilHooks) AfterAcknowledgeChunk(ctx context.Context, category string, fileName string) error {
 	return nil
 }
 

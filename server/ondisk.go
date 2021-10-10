@@ -20,8 +20,8 @@ const maxFileChunkSize = 20 * 1024 * 1024 // bytes
 var errBufTooSmall = errors.New("the buffer is too small to contain a single message")
 
 type StorageHooks interface {
-	BeforeCreatingChunk(ctx context.Context, category string, fileName string) error
-	BeforeAcknowledgeChunk(ctx context.Context, category string, fileName string) error
+	AfterCreatingChunk(ctx context.Context, category string, fileName string) error
+	AfterAcknowledgeChunk(ctx context.Context, category string, fileName string) error
 }
 
 // OnDisk stores all the data on disk.
@@ -32,10 +32,11 @@ type OnDisk struct {
 
 	repl StorageHooks
 
-	writeMu       sync.Mutex
-	lastChunk     string
-	lastChunkSize uint64
-	lastChunkIdx  uint64
+	writeMu                     sync.Mutex
+	lastChunk                   string
+	lastChunkSize               uint64
+	lastChunkIdx                uint64
+	lastChunkAddedToReplication bool
 
 	fpsMu sync.Mutex
 	fps   map[string]*os.File
@@ -104,15 +105,20 @@ func (s *OnDisk) Write(ctx context.Context, msgs []byte) error {
 		s.lastChunk = fmt.Sprintf("%s-chunk%09d", s.instanceName, s.lastChunkIdx)
 		s.lastChunkSize = 0
 		s.lastChunkIdx++
-
-		if err := s.repl.BeforeCreatingChunk(ctx, s.category, s.lastChunk); err != nil {
-			return fmt.Errorf("before creating new chunk: %w", err)
-		}
+		s.lastChunkAddedToReplication = false
 	}
 
 	fp, err := s.getFileDescriptor(s.lastChunk, true)
 	if err != nil {
 		return err
+	}
+
+	if !s.lastChunkAddedToReplication {
+		if err := s.repl.AfterCreatingChunk(ctx, s.category, s.lastChunk); err != nil {
+			return fmt.Errorf("after creating new chunk: %w", err)
+		}
+
+		s.lastChunkAddedToReplication = true
 	}
 
 	_, err = fp.Write(msgs)
@@ -223,14 +229,14 @@ func (s *OnDisk) Ack(ctx context.Context, chunk string, size uint64) error {
 		return fmt.Errorf("file was not fully processed: the supplied processed size %d is smaller than the chunk file size %d", size, fi.Size())
 	}
 
-	// We ignore the error here so that we can continue reading chunks when etcd is down.
-	if err := s.repl.BeforeAcknowledgeChunk(ctx, s.category, chunk); err != nil {
-		// TODO: remember the ack request still
-		log.Printf("Failed to replicate ack request: %v", err)
-	}
-
 	if err := os.Remove(chunkFilename); err != nil {
 		return fmt.Errorf("removing %q: %v", chunk, err)
+	}
+
+	// We ignore the error here so that we can continue reading chunks when etcd is down.
+	if err := s.repl.AfterAcknowledgeChunk(ctx, s.category, chunk); err != nil {
+		// TODO: remember the ack request still
+		log.Printf("Failed to replicate ack request: %v", err)
 	}
 
 	s.forgetFileDescriptor(chunk)

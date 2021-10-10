@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -160,7 +161,7 @@ func (c *CategoryDownloader) Loop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case ch := <-c.eventsCh:
-			c.downloadChunk(ctx, ch)
+			c.downloadAllChunksUpTo(ctx, ch)
 
 			// TODO: handle errors
 			if err := c.state.DeleteChunkFromReplicationQueue(ctx, c.instanceName, ch); err != nil {
@@ -168,6 +169,75 @@ func (c *CategoryDownloader) Loop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (c *CategoryDownloader) downloadAllChunksUpTo(ctx context.Context, toReplicate Chunk) {
+	for {
+		err := c.downloadAllChunksUpToIteration(ctx, toReplicate)
+		if err != nil {
+			log.Printf("got an error while doing downloadAllChunksUpToIteration for chunk %+v: %v", toReplicate, err)
+
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			// TODO: exponential backoff
+			time.Sleep(retryTimeout)
+			continue
+		}
+
+		return
+	}
+}
+
+// downloadAllChunksUpTo downloads all chunks from the owner of the requested
+// chunk that are either the requested chunk, or the chunks that are older
+// than the chunk requested.
+//
+// This is needed because we can receive chunk replicate requests out of order,
+// but replication must be in order because readers rely on the fact that if
+// they read chunk X then there is no need to even examine chunks X-1, X-2, etc.
+func (c *CategoryDownloader) downloadAllChunksUpToIteration(ctx context.Context, toReplicate Chunk) error {
+	addr, err := c.listenAddrForChunk(ctx, toReplicate)
+	if err != nil {
+		return fmt.Errorf("getting listen address: %v", err)
+	}
+
+	chunks, err := c.s.ListChunks(ctx, toReplicate.Category, addr, true)
+	if err != nil {
+		return fmt.Errorf("list chunks from %q: %v", addr, err)
+	}
+
+	var chunksToReplicate []protocol.Chunk
+	for _, ch := range chunks {
+		if ch.Name <= toReplicate.FileName {
+			chunksToReplicate = append(chunksToReplicate, ch)
+		}
+	}
+
+	sort.Slice(chunksToReplicate, func(i, j int) bool {
+		return chunksToReplicate[i].Name < chunksToReplicate[j].Name
+	})
+
+	for _, ch := range chunksToReplicate {
+		size, exists, err := c.wr.Stat(toReplicate.Category, ch.Name)
+		if err != nil {
+			return fmt.Errorf("getting file stat: %v", err)
+		}
+
+		// TODO: test downloading empty chunks
+		if !exists || ch.Size > uint64(size) || !ch.Complete {
+			c.downloadChunk(ctx, Chunk{
+				Owner:    toReplicate.Owner,
+				Category: toReplicate.Category,
+				FileName: ch.Name,
+			})
+		}
+	}
+
+	return nil
 }
 
 func (c *CategoryDownloader) downloadChunk(parentCtx context.Context, ch Chunk) {
