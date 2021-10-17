@@ -3,17 +3,20 @@ package replication
 import (
 	"context"
 	"fmt"
+	"log"
 )
 
 // Storage provides hooks for the ondisk storage that will be called to
 // ensure that chunks are replicated.
 type Storage struct {
+	logger          *log.Logger
 	client          *State
 	currentInstance string
 }
 
-func NewStorage(client *State, currentInstance string) *Storage {
+func NewStorage(logger *log.Logger, client *State, currentInstance string) *Storage {
 	return &Storage{
+		logger:          logger,
 		client:          client,
 		currentInstance: currentInstance,
 	}

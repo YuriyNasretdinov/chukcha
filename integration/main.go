@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,7 +17,8 @@ import (
 )
 
 type InitArgs struct {
-	EtcdAddr []string
+	LogWriter io.Writer
+	EtcdAddr  []string
 
 	ClusterName  string
 	InstanceName string
@@ -28,9 +30,9 @@ type InitArgs struct {
 // InitAndServe checks validity of the supplied arguments and starts
 // the web server on the specified port.
 func InitAndServe(a InitArgs) error {
-	log.SetPrefix("[" + a.InstanceName + "] ")
+	logger := log.New(a.LogWriter, "["+a.InstanceName+"] ", log.LstdFlags)
 
-	replState, err := replication.NewState(a.EtcdAddr, a.ClusterName)
+	replState, err := replication.NewState(logger, a.EtcdAddr, a.ClusterName)
 	if err != nil {
 		return err
 	}
@@ -53,24 +55,26 @@ func InitAndServe(a InitArgs) error {
 	fp.Close()
 	os.Remove(fp.Name())
 
-	replStorage := replication.NewStorage(replState, a.InstanceName)
+	replStorage := replication.NewStorage(logger, replState, a.InstanceName)
 	creator := &OnDiskCreator{
+		logger:       logger,
 		dirName:      a.DirName,
 		instanceName: a.InstanceName,
 		replStorage:  replStorage,
 		storages:     make(map[string]*server.OnDisk),
 	}
 
-	s := web.NewServer(replState, a.InstanceName, a.DirName, a.ListenAddr, replStorage, creator.Get)
+	s := web.NewServer(logger, replState, a.InstanceName, a.DirName, a.ListenAddr, replStorage, creator.Get)
 
-	replClient := replication.NewClient(replState, creator, a.InstanceName)
+	replClient := replication.NewClient(logger, replState, creator, a.InstanceName)
 	go replClient.Loop(context.Background())
 
-	log.Printf("Listening connections")
+	logger.Printf("Listening connections at %q", a.ListenAddr)
 	return s.Serve()
 }
 
 type OnDiskCreator struct {
+	logger       *log.Logger
 	dirName      string
 	instanceName string
 	replStorage  *replication.Storage
@@ -119,7 +123,7 @@ func (c *OnDiskCreator) Get(category string) (*server.OnDisk, error) {
 		return storage, nil
 	}
 
-	storage, err := c.newOnDisk(category)
+	storage, err := c.newOnDisk(c.logger, category)
 	if err != nil {
 		return nil, err
 	}
@@ -128,11 +132,11 @@ func (c *OnDiskCreator) Get(category string) (*server.OnDisk, error) {
 	return storage, nil
 }
 
-func (c *OnDiskCreator) newOnDisk(category string) (*server.OnDisk, error) {
+func (c *OnDiskCreator) newOnDisk(logger *log.Logger, category string) (*server.OnDisk, error) {
 	dir := filepath.Join(c.dirName, category)
 	if err := os.MkdirAll(dir, 0777); err != nil {
 		return nil, fmt.Errorf("creating directory for the category: %v", err)
 	}
 
-	return server.NewOnDisk(dir, category, c.instanceName, c.replStorage)
+	return server.NewOnDisk(logger, dir, category, c.instanceName, c.replStorage)
 }

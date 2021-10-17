@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/YuriyNasretdinov/chukcha/integration"
@@ -36,6 +37,7 @@ func main() {
 	}
 
 	a := integration.InitArgs{
+		LogWriter:    os.Stderr,
 		EtcdAddr:     strings.Split(*etcdAddr, ","),
 		ClusterName:  *clusterName,
 		InstanceName: *instanceName,

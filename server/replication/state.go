@@ -16,12 +16,13 @@ const defaultTimeout = 10 * time.Second
 // State is a wrapper around the persistent key-value storage
 // used to store information about the replication state.
 type State struct {
+	logger *log.Logger
 	cl     *clientv3.Client
 	prefix string
 }
 
 // NewState initialises the connection to the etcd cluster.
-func NewState(addr []string, clusterName string) (*State, error) {
+func NewState(logger *log.Logger, addr []string, clusterName string) (*State, error) {
 	etcdClient, err := clientv3.New(clientv3.Config{
 		Endpoints:   addr,
 		DialTimeout: defaultTimeout,
@@ -39,6 +40,7 @@ func NewState(addr []string, clusterName string) (*State, error) {
 	}
 
 	return &State{
+		logger: logger,
 		cl:     etcdClient,
 		prefix: "chukcha/" + clusterName + "/",
 	}, nil
@@ -167,14 +169,14 @@ func (c *State) watchQueue(ctx context.Context, queueName string, instanceName s
 		resp, err := c.cl.Get(ctx, prefix, clientv3.WithPrefix())
 		// TODO: handle errors better.
 		if err != nil {
-			log.Printf("etcd list keys failed (SOME CHUNKS WILL NOT BE DOWNLOADED): %v", err)
+			c.logger.Printf("etcd list keys failed (SOME CHUNKS WILL NOT BE DOWNLOADED): %v", err)
 			return
 		}
 
 		for _, kv := range resp.Kvs {
 			ch, err := c.parseReplicationKey(prefix, kv)
 			if err != nil {
-				log.Printf("etcd initial key list error: %v", err)
+				c.logger.Printf("etcd initial key list error: %v", err)
 				continue
 			}
 
@@ -186,7 +188,7 @@ func (c *State) watchQueue(ctx context.Context, queueName string, instanceName s
 		for resp := range c.cl.Watch(clientv3.WithRequireLeader(ctx), prefix, clientv3.WithPrefix()) {
 			// TODO: handle errors better.
 			if err := resp.Err(); err != nil {
-				log.Printf("etcd watch error: %v", err)
+				c.logger.Printf("etcd watch error: %v", err)
 				return
 			}
 
@@ -197,7 +199,7 @@ func (c *State) watchQueue(ctx context.Context, queueName string, instanceName s
 
 				ch, err := c.parseReplicationKey(prefix, ev.Kv)
 				if err != nil {
-					log.Printf("etcd watch error: %v", err)
+					c.logger.Printf("etcd watch error: %v", err)
 					continue
 				}
 

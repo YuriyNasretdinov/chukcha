@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -178,7 +179,7 @@ func (n *nilHooks) AfterAcknowledgeChunk(ctx context.Context, category string, f
 func testNewOnDisk(t *testing.T, dir string) *OnDisk {
 	t.Helper()
 
-	srv, err := NewOnDisk(dir, "test", "moscow", &nilHooks{})
+	srv, err := NewOnDisk(log.Default(), dir, "test", "moscow", &nilHooks{})
 	if err != nil {
 		t.Fatalf("NewOnDisk(): %v", err)
 	}

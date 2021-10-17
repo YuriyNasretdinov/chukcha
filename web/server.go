@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 // Server implements a web server
 type Server struct {
+	logger       *log.Logger
 	instanceName string
 	dirname      string
 	listenAddr   string
@@ -29,8 +31,9 @@ type Server struct {
 type GetOnDiskFn func(category string) (*server.OnDisk, error)
 
 // NewServer creates *Server
-func NewServer(replClient *replication.State, instanceName string, dirname string, listenAddr string, replStorage *replication.Storage, getOnDisk GetOnDiskFn) *Server {
+func NewServer(logger *log.Logger, replClient *replication.State, instanceName string, dirname string, listenAddr string, replStorage *replication.Storage, getOnDisk GetOnDiskFn) *Server {
 	return &Server{
+		logger:       logger,
 		instanceName: instanceName,
 		dirname:      dirname,
 		listenAddr:   listenAddr,
@@ -133,7 +136,7 @@ func (s *Server) readHandler(ctx *fasthttp.RequestCtx) {
 
 	fromReplication, _ := ctx.QueryArgs().GetUint("from_replication")
 	if fromReplication == 1 {
-		// log.Printf("sleeping for 8 seconds for request from replication for chunk %v", string(chunk))
+		// c.logger.Printf("sleeping for 8 seconds for request from replication for chunk %v", string(chunk))
 		// time.Sleep(time.Second * 8)
 	}
 
@@ -160,7 +163,7 @@ func (s *Server) readHandler(ctx *fasthttp.RequestCtx) {
 
 	err = storage.Read(string(chunk), uint64(off), uint64(maxSize), ctx)
 	if err != nil && err != io.EOF {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			ctx.SetStatusCode(fasthttp.StatusNotFound)
 		} else {
 			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
@@ -180,7 +183,7 @@ func (s *Server) listChunksHandler(ctx *fasthttp.RequestCtx) {
 
 	fromReplication, _ := ctx.QueryArgs().GetUint("from_replication")
 	if fromReplication == 1 {
-		// log.Printf("sleeping for 8 seconds for request from replication for listing chunks")
+		// c.logger.Printf("sleeping for 8 seconds for request from replication for listing chunks")
 		// time.Sleep(time.Second * 8)
 	}
 

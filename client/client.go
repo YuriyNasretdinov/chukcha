@@ -22,7 +22,8 @@ const defaultScratchSize = 64 * 1024
 
 // Simple represents an instance of client connected to a set of Chukcha servers.
 type Simple struct {
-	Debug bool
+	Debug  bool
+	Logger *log.Logger
 
 	addrs []string
 	cl    *http.Client
@@ -61,6 +62,14 @@ func (s *Simple) RestoreSavedState(buf []byte) error {
 	return json.Unmarshal(buf, &s.st)
 }
 
+func (s *Simple) logger() *log.Logger {
+	if s.Logger == nil {
+		return log.Default()
+	}
+
+	return s.Logger
+}
+
 // Send sends the messages to the Chukcha servers.
 func (s *Simple) Send(ctx context.Context, category string, msgs []byte) error {
 	u := url.Values{}
@@ -69,7 +78,11 @@ func (s *Simple) Send(ctx context.Context, category string, msgs []byte) error {
 	url := s.getAddr() + "/write?" + u.Encode()
 
 	if s.Debug {
-		log.Printf("Sending to %s the following messages: %q", url, msgs)
+		debugMsgs := msgs
+		if len(debugMsgs) > 128 {
+			debugMsgs = []byte(fmt.Sprintf("%s... (%d bytes total)", msgs[0:128], len(msgs)))
+		}
+		s.logger().Printf("Sending to %s the following messages: %q", url, debugMsgs)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(msgs))
@@ -137,7 +150,7 @@ func (s *Simple) processInstance(ctx context.Context, addr, instance, category s
 		err := s.process(ctx, addr, instance, category, scratch, processFn)
 		if err == errRetry {
 			if s.Debug {
-				log.Printf("Retrying reading category %q", category)
+				s.logger().Printf("Retrying reading category %q (got error %v)", category, err)
 			}
 			continue
 		}
@@ -162,7 +175,7 @@ func (s *Simple) process(ctx context.Context, addr, instance, category string, s
 	readURL := fmt.Sprintf("%s/read?%s", addr, u.Encode())
 
 	if s.Debug {
-		log.Printf("Reading from %s", readURL)
+		s.logger().Printf("Reading from %s", readURL)
 	}
 
 	resp, err := s.cl.Get(readURL)
@@ -172,10 +185,18 @@ func (s *Simple) process(ctx context.Context, addr, instance, category string, s
 
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	// If the chunk does not exist, but we got it through ListChunks(),
+	// it means that this chunk hasn't been replicated to this server
+	// yet, but it is not an error because eventually it should appear.
+	if resp.StatusCode == http.StatusNotFound {
+		// TODO: handle missing chunks better
+		io.Copy(ioutil.Discard, resp.Body)
+		s.logger().Printf("Chunk %+v is missing at %q, probably hasn't replicated yet, skipping", curCh.CurChunk, addr)
+		return nil
+	} else if resp.StatusCode != http.StatusOK {
 		var b bytes.Buffer
 		io.Copy(&b, resp.Body)
-		return fmt.Errorf("http code %d, %s", resp.StatusCode, b.String())
+		return fmt.Errorf("GET %q: http code %d, %s", readURL, resp.StatusCode, b.String())
 	}
 
 	b := bytes.NewBuffer(scratch[0:0])
@@ -197,7 +218,7 @@ func (s *Simple) process(ctx context.Context, addr, instance, category string, s
 				if curCh.Off >= curCh.CurChunk.Size {
 					return io.EOF
 				}
-
+			} else {
 				// New data appeared in between us sending the read request and
 				// the chunk becoming complete.
 				return errRetry
@@ -207,6 +228,9 @@ func (s *Simple) process(ctx context.Context, addr, instance, category string, s
 		// The chunk has been marked complete. However, new data appeared
 		// in between us sending the read request and the chunk becoming complete.
 		if curCh.Off < curCh.CurChunk.Size {
+			if s.Debug {
+				s.logger().Printf(`errRetry: The chunk %q has been marked complete. However, new data appeared in between us sending the read request and the chunk becoming complete. (curCh.Off < curCh.CurChunk.Size) = (%v < %v)`, curCh.CurChunk.Name, curCh.Off, curCh.CurChunk.Size)
+			}
 			return errRetry
 		}
 
@@ -222,6 +246,9 @@ func (s *Simple) process(ctx context.Context, addr, instance, category string, s
 		curCh.CurChunk = protocol.Chunk{}
 		curCh.Off = 0
 
+		if s.Debug {
+			s.logger().Printf(`errRetry: need to read the next chunk so that we do not return empty response`)
+		}
 		return errRetry
 	}
 
@@ -358,6 +385,10 @@ func (s *Simple) ListChunks(ctx context.Context, category, addr string, fromRepl
 	var res []protocol.Chunk
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return nil, err
+	}
+
+	if s.Debug {
+		s.logger().Printf("ListChunks(%q) returned %+v", addr, res)
 	}
 
 	return res, nil

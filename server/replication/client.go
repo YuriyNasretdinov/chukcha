@@ -30,6 +30,7 @@ var errIncomplete = errors.New("chunk is not complete")
 // Client describes the client-side state of replication and continiously downloads
 // new chunks from other servers.
 type Client struct {
+	logger       *log.Logger
 	state        *State
 	wr           DirectWriter
 	instanceName string
@@ -42,6 +43,7 @@ type Client struct {
 }
 
 type CategoryDownloader struct {
+	logger   *log.Logger
 	eventsCh chan Chunk
 
 	state        *State
@@ -65,8 +67,9 @@ type DirectWriter interface {
 }
 
 // NewClient initialises the replication client.
-func NewClient(st *State, wr DirectWriter, instanceName string) *Client {
+func NewClient(logger *log.Logger, st *State, wr DirectWriter, instanceName string) *Client {
 	return &Client{
+		logger:       logger,
 		state:        st,
 		wr:           wr,
 		instanceName: instanceName,
@@ -85,17 +88,17 @@ func (c *Client) Loop(ctx context.Context) {
 
 func (c *Client) acknowledgeLoop(ctx context.Context) {
 	for ch := range c.state.WatchAcknowledgeQueue(ctx, c.instanceName) {
-		log.Printf("acknowledging chunk %+v", ch)
+		c.logger.Printf("acknowledging chunk %+v", ch)
 
 		c.ensureChunkIsNotBeingDownloaded(ch)
 
 		// TODO: handle errors better
 		if err := c.wr.AckDirect(ctx, ch.Category, ch.FileName); err != nil {
-			log.Printf("Could not ack chunk %+v from the acknowledge queue: %v", ch, err)
+			c.logger.Printf("Could not ack chunk %+v from the acknowledge queue: %v", ch, err)
 		}
 
 		if err := c.state.DeleteChunkFromAcknowledgeQueue(ctx, c.instanceName, ch); err != nil {
-			log.Printf("Could not delete chunk %+v from the acknowledge queue: %v", ch, err)
+			c.logger.Printf("Could not delete chunk %+v from the acknowledge queue: %v", ch, err)
 		}
 	}
 }
@@ -137,6 +140,7 @@ func (c *Client) replicationLoop(ctx context.Context) {
 		downloader, ok := c.perCategory[ch.Category]
 		if !ok {
 			downloader = &CategoryDownloader{
+				logger:       c.logger,
 				eventsCh:     make(chan Chunk, 3),
 				state:        c.state,
 				wr:           c.wr,
@@ -165,7 +169,7 @@ func (c *CategoryDownloader) Loop(ctx context.Context) {
 
 			// TODO: handle errors
 			if err := c.state.DeleteChunkFromReplicationQueue(ctx, c.instanceName, ch); err != nil {
-				log.Printf("Could not delete chunk %+v from the replication queue: %v", ch, err)
+				c.logger.Printf("Could not delete chunk %+v from the replication queue: %v", ch, err)
 			}
 		}
 	}
@@ -175,7 +179,7 @@ func (c *CategoryDownloader) downloadAllChunksUpTo(ctx context.Context, toReplic
 	for {
 		err := c.downloadAllChunksUpToIteration(ctx, toReplicate)
 		if err != nil {
-			log.Printf("got an error while doing downloadAllChunksUpToIteration for chunk %+v: %v", toReplicate, err)
+			c.logger.Printf("got an error while doing downloadAllChunksUpToIteration for chunk %+v: %v", toReplicate, err)
 
 			select {
 			case <-ctx.Done():
@@ -212,7 +216,9 @@ func (c *CategoryDownloader) downloadAllChunksUpToIteration(ctx context.Context,
 
 	var chunksToReplicate []protocol.Chunk
 	for _, ch := range chunks {
-		if ch.Name <= toReplicate.FileName {
+		instance, _ := protocol.ParseChunkFileName(ch.Name)
+
+		if instance == toReplicate.Owner && ch.Name <= toReplicate.FileName {
 			chunksToReplicate = append(chunksToReplicate, ch)
 		}
 	}
@@ -241,8 +247,8 @@ func (c *CategoryDownloader) downloadAllChunksUpToIteration(ctx context.Context,
 }
 
 func (c *CategoryDownloader) downloadChunk(parentCtx context.Context, ch Chunk) {
-	log.Printf("downloading chunk %+v", ch)
-	defer log.Printf("finished downloading chunk %+v", ch)
+	c.logger.Printf("downloading chunk %+v", ch)
+	defer c.logger.Printf("finished downloading chunk %+v", ch)
 
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
@@ -268,13 +274,13 @@ func (c *CategoryDownloader) downloadChunk(parentCtx context.Context, ch Chunk) 
 	for {
 		err := c.downloadChunkIteration(ctx, ch)
 		if errors.Is(err, errNotFound) {
-			log.Printf("got a not found error while downloading chunk %+v, skipping chunk", ch)
+			c.logger.Printf("got a not found error while downloading chunk %+v, skipping chunk", ch)
 			return
 		} else if errors.Is(err, errIncomplete) {
 			time.Sleep(pollInterval)
 			continue
 		} else if err != nil {
-			log.Printf("got an error while downloading chunk %+v: %v", ch, err)
+			c.logger.Printf("got an error while downloading chunk %+v: %v", ch, err)
 
 			select {
 			case <-ctx.Done():
@@ -304,7 +310,7 @@ func (c *CategoryDownloader) downloadChunkIteration(ctx context.Context, ch Chun
 
 	info, err := c.getChunkInfo(ctx, addr, ch)
 	if err == errNotFound {
-		log.Printf("chunk not found at %q", addr)
+		c.logger.Printf("chunk not found at %q", addr)
 		return nil
 	} else if err != nil {
 		return err

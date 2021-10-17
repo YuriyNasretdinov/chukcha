@@ -26,6 +26,7 @@ type StorageHooks interface {
 
 // OnDisk stores all the data on disk.
 type OnDisk struct {
+	logger       *log.Logger
 	dirname      string
 	category     string
 	instanceName string
@@ -43,8 +44,9 @@ type OnDisk struct {
 }
 
 // NewOnDisk creates a server that stores all it's data on disk.
-func NewOnDisk(dirname, category, instanceName string, repl StorageHooks) (*OnDisk, error) {
+func NewOnDisk(logger *log.Logger, dirname, category, instanceName string, repl StorageHooks) (*OnDisk, error) {
 	s := &OnDisk{
+		logger:       logger,
 		dirname:      dirname,
 		category:     category,
 		instanceName: instanceName,
@@ -143,7 +145,7 @@ func (s *OnDisk) getFileDescriptor(chunk string, write bool) (*os.File, error) {
 	filename := filepath.Join(s.dirname, chunk)
 	fp, err := os.OpenFile(filename, fl, 0666)
 	if err != nil {
-		return nil, fmt.Errorf("create file %q: %s", filename, err)
+		return nil, fmt.Errorf("create file %q: %w", filename, err)
 	}
 
 	s.fps[chunk] = fp
@@ -175,7 +177,7 @@ func (s *OnDisk) Read(chunk string, off uint64, maxSize uint64, w io.Writer) err
 
 	fp, err := s.getFileDescriptor(chunk, false)
 	if err != nil {
-		return fmt.Errorf("getFileDescriptor(%q): %v", chunk, err)
+		return fmt.Errorf("getFileDescriptor(%q): %w", chunk, err)
 	}
 
 	buf := make([]byte, maxSize)
@@ -236,7 +238,7 @@ func (s *OnDisk) Ack(ctx context.Context, chunk string, size uint64) error {
 	// We ignore the error here so that we can continue reading chunks when etcd is down.
 	if err := s.repl.AfterAcknowledgeChunk(ctx, s.category, chunk); err != nil {
 		// TODO: remember the ack request still
-		log.Printf("Failed to replicate ack request: %v", err)
+		s.logger.Printf("Failed to replicate ack request: %v", err)
 	}
 
 	s.forgetFileDescriptor(chunk)
