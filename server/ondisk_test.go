@@ -179,7 +179,7 @@ func (n *nilHooks) AfterAcknowledgeChunk(ctx context.Context, category string, f
 func testNewOnDisk(t *testing.T, dir string) *OnDisk {
 	t.Helper()
 
-	srv, err := NewOnDisk(log.Default(), dir, "test", "moscow", &nilHooks{})
+	srv, err := NewOnDisk(log.Default(), dir, "test", "moscow", 20*1024*1024, &nilHooks{})
 	if err != nil {
 		t.Fatalf("NewOnDisk(): %v", err)
 	}

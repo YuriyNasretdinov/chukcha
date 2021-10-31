@@ -25,6 +25,11 @@ type InitArgs struct {
 
 	DirName    string
 	ListenAddr string
+
+	MaxChunkSize uint64
+
+	// The next set of parameters is only set in tests.
+	DisableAcknowledge bool
 }
 
 // InitAndServe checks validity of the supplied arguments and starts
@@ -62,12 +67,13 @@ func InitAndServe(a InitArgs) error {
 		instanceName: a.InstanceName,
 		replStorage:  replStorage,
 		storages:     make(map[string]*server.OnDisk),
+		maxChunkSize: a.MaxChunkSize,
 	}
 
 	s := web.NewServer(logger, replState, a.InstanceName, a.DirName, a.ListenAddr, replStorage, creator.Get)
 
 	replClient := replication.NewClient(logger, replState, creator, a.InstanceName)
-	go replClient.Loop(context.Background())
+	go replClient.Loop(context.Background(), a.DisableAcknowledge)
 
 	logger.Printf("Listening connections at %q", a.ListenAddr)
 	return s.Serve()
@@ -78,6 +84,7 @@ type OnDiskCreator struct {
 	dirName      string
 	instanceName string
 	replStorage  *replication.Storage
+	maxChunkSize uint64
 
 	m        sync.Mutex
 	storages map[string]*server.OnDisk
@@ -85,15 +92,24 @@ type OnDiskCreator struct {
 
 // Stat returns information about the chunk: whether or not it exists and it's size.
 // If file does not exist no error is returned.
-func (c *OnDiskCreator) Stat(category string, fileName string) (size int64, exists bool, err error) {
-	st, err := os.Stat(filepath.Join(c.dirName, category, fileName))
+func (c *OnDiskCreator) Stat(category string, fileName string) (size int64, exists bool, deleted bool, err error) {
+	filePath := filepath.Join(c.dirName, category, fileName)
+
+	st, err := os.Stat(filePath)
 	if errors.Is(err, os.ErrNotExist) {
-		return 0, false, nil
+		_, deletedErr := os.Stat(filePath + server.DeletedSuffix)
+		if errors.Is(deletedErr, os.ErrNotExist) {
+			return 0, false, false, nil
+		} else if deletedErr != nil {
+			return 0, false, false, deletedErr
+		}
+
+		return 0, false, true, nil
 	} else if err != nil {
-		return 0, false, err
+		return 0, false, false, err
 	}
 
-	return st.Size(), true, nil
+	return st.Size(), true, false, nil
 }
 
 func (c *OnDiskCreator) WriteDirect(category string, fileName string, contents []byte) error {
@@ -138,5 +154,5 @@ func (c *OnDiskCreator) newOnDisk(logger *log.Logger, category string) (*server.
 		return nil, fmt.Errorf("creating directory for the category: %v", err)
 	}
 
-	return server.NewOnDisk(logger, dir, category, c.instanceName, c.replStorage)
+	return server.NewOnDisk(logger, dir, category, c.instanceName, c.maxChunkSize, c.replStorage)
 }

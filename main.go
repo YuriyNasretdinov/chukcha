@@ -43,6 +43,7 @@ func main() {
 		InstanceName: *instanceName,
 		DirName:      *dirname,
 		ListenAddr:   *listenAddr,
+		MaxChunkSize: 20 * 1024 * 1024,
 	}
 
 	if err := integration.InitAndServe(a); err != nil {

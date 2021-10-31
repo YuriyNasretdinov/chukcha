@@ -61,7 +61,7 @@ type CategoryDownloader struct {
 
 // DirectWriter writes to underlying storage directly for replication purposes.
 type DirectWriter interface {
-	Stat(category string, fileName string) (size int64, exists bool, err error)
+	Stat(category string, fileName string) (size int64, exists bool, deleted bool, err error)
 	WriteDirect(category string, fileName string, contents []byte) error
 	AckDirect(ctx context.Context, category string, chunk string) error
 }
@@ -81,8 +81,10 @@ func NewClient(logger *log.Logger, st *State, wr DirectWriter, instanceName stri
 	}
 }
 
-func (c *Client) Loop(ctx context.Context) {
-	go c.acknowledgeLoop(ctx)
+func (c *Client) Loop(ctx context.Context, disableAcknowledge bool) {
+	if !disableAcknowledge {
+		go c.acknowledgeLoop(ctx)
+	}
 	c.replicationLoop(ctx)
 }
 
@@ -228,9 +230,14 @@ func (c *CategoryDownloader) downloadAllChunksUpToIteration(ctx context.Context,
 	})
 
 	for _, ch := range chunksToReplicate {
-		size, exists, err := c.wr.Stat(toReplicate.Category, ch.Name)
+		size, exists, deleted, err := c.wr.Stat(toReplicate.Category, ch.Name)
 		if err != nil {
 			return fmt.Errorf("getting file stat: %v", err)
+		}
+
+		// Do not redownload chunks that were already acknowledged.
+		if deleted {
+			continue
 		}
 
 		// TODO: test downloading empty chunks
@@ -298,7 +305,7 @@ func (c *CategoryDownloader) downloadChunk(parentCtx context.Context, ch Chunk) 
 }
 
 func (c *CategoryDownloader) downloadChunkIteration(ctx context.Context, ch Chunk) error {
-	size, _, err := c.wr.Stat(ch.Category, ch.FileName)
+	size, _, _, err := c.wr.Stat(ch.Category, ch.FileName)
 	if err != nil {
 		return fmt.Errorf("getting file stat: %v", err)
 	}
@@ -332,7 +339,7 @@ func (c *CategoryDownloader) downloadChunkIteration(ctx context.Context, ch Chun
 		return fmt.Errorf("writing chunk: %v", err)
 	}
 
-	size, _, err = c.wr.Stat(ch.Category, ch.FileName)
+	size, _, _, err = c.wr.Stat(ch.Category, ch.FileName)
 	if err != nil {
 		return fmt.Errorf("getting file stat: %v", err)
 	}
