@@ -1,19 +1,15 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math/rand"
 	"net/http"
-	"net/url"
 	"sort"
-	"strconv"
 
 	"github.com/YuriyNasretdinov/chukcha/protocol"
 )
@@ -26,7 +22,7 @@ type Simple struct {
 	Logger *log.Logger
 
 	addrs []string
-	cl    *http.Client
+	cl    *Raw
 
 	st *state
 }
@@ -45,7 +41,7 @@ type state struct {
 func NewSimple(addrs []string) *Simple {
 	return &Simple{
 		addrs: addrs,
-		cl:    &http.Client{},
+		cl:    NewRaw(&http.Client{}),
 		st:    &state{Offsets: make(map[string]*ReadOffset)},
 	}
 }
@@ -72,40 +68,7 @@ func (s *Simple) logger() *log.Logger {
 
 // Send sends the messages to the Chukcha servers.
 func (s *Simple) Send(ctx context.Context, category string, msgs []byte) error {
-	u := url.Values{}
-	u.Add("category", category)
-
-	url := s.getAddr() + "/write?" + u.Encode()
-
-	if s.Debug {
-		debugMsgs := msgs
-		if len(debugMsgs) > 128 {
-			debugMsgs = []byte(fmt.Sprintf("%s... (%d bytes total)", msgs[0:128], len(msgs)))
-		}
-		s.logger().Printf("Sending to %s the following messages: %q", url, debugMsgs)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(msgs))
-	if err != nil {
-		return fmt.Errorf("making http request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/octet-stream")
-
-	resp, err := s.cl.Do(req)
-	if err != nil {
-		return err
-	}
-
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		var b bytes.Buffer
-		io.Copy(&b, resp.Body)
-		return fmt.Errorf("http code %d, %s", resp.StatusCode, b.String())
-	}
-
-	io.Copy(ioutil.Discard, resp.Body)
-	return nil
+	return s.cl.Write(ctx, s.getAddr(), category, msgs)
 }
 
 var errRetry = errors.New("please retry the request")
@@ -166,47 +129,18 @@ func (s *Simple) getAddr() string {
 func (s *Simple) process(ctx context.Context, addr, instance, category string, scratch []byte, processFn func([]byte) error) error {
 	curCh := s.st.Offsets[instance]
 
-	u := url.Values{}
-	u.Add("off", strconv.Itoa(int(curCh.Off)))
-	u.Add("maxSize", strconv.Itoa(len(scratch)))
-	u.Add("chunk", curCh.CurChunk.Name)
-	u.Add("category", category)
-
-	readURL := fmt.Sprintf("%s/read?%s", addr, u.Encode())
-
-	if s.Debug {
-		s.logger().Printf("Reading from %s", readURL)
-	}
-
-	resp, err := s.cl.Get(readURL)
+	res, found, err := s.cl.Read(ctx, addr, category, curCh.CurChunk.Name, curCh.Off, scratch)
 	if err != nil {
-		return fmt.Errorf("read %q: %v", readURL, err)
-	}
-
-	defer resp.Body.Close()
-
-	// If the chunk does not exist, but we got it through ListChunks(),
-	// it means that this chunk hasn't been replicated to this server
-	// yet, but it is not an error because eventually it should appear.
-	if resp.StatusCode == http.StatusNotFound {
-		// TODO: handle missing chunks better
-		io.Copy(ioutil.Discard, resp.Body)
-		s.logger().Printf("Chunk %+v is missing at %q, probably hasn't replicated yet, skipping", curCh.CurChunk, addr)
+		return err
+	} else if !found {
+		if s.Debug {
+			s.logger().Printf("Chunk %+v is missing at %q, probably hasn't replicated yet, skipping", curCh.CurChunk.Name, addr)
+		}
 		return nil
-	} else if resp.StatusCode != http.StatusOK {
-		var b bytes.Buffer
-		io.Copy(&b, resp.Body)
-		return fmt.Errorf("GET %q: http code %d, %s", readURL, resp.StatusCode, b.String())
-	}
-
-	b := bytes.NewBuffer(scratch[0:0])
-	_, err = io.Copy(b, resp.Body)
-	if err != nil {
-		return fmt.Errorf("writing response: %v", err)
 	}
 
 	// 0 bytes read but no errors means the end of file by convention.
-	if b.Len() == 0 {
+	if len(res) == 0 {
 		if !curCh.CurChunk.Complete {
 			if err := s.updateCurrentChunkCompleteStatus(ctx, curCh, instance, category, addr); err != nil {
 				return fmt.Errorf("updateCurrentChunkCompleteStatus: %v", err)
@@ -234,7 +168,7 @@ func (s *Simple) process(ctx context.Context, addr, instance, category string, s
 			return errRetry
 		}
 
-		if err := s.ackCurrentChunk(instance, category, addr); err != nil {
+		if err := s.cl.Ack(ctx, addr, category, curCh.CurChunk.Name, curCh.Off); err != nil {
 			return fmt.Errorf("ack current chunk: %v", err)
 		}
 
@@ -252,16 +186,16 @@ func (s *Simple) process(ctx context.Context, addr, instance, category string, s
 		return errRetry
 	}
 
-	err = processFn(b.Bytes())
+	err = processFn(res)
 	if err == nil {
-		curCh.Off += uint64(b.Len())
+		curCh.Off += uint64(len(res))
 	}
 
 	return err
 }
 
 func (s *Simple) updateCurrentChunks(ctx context.Context, category, addr string) error {
-	chunks, err := s.ListChunks(ctx, category, addr, false)
+	chunks, err := s.cl.ListChunks(ctx, addr, category, false)
 	if err != nil {
 		return fmt.Errorf("listChunks failed: %v", err)
 	}
@@ -324,7 +258,7 @@ func (s *Simple) getOldestChunk(chunks []protocol.Chunk) protocol.Chunk {
 }
 
 func (s *Simple) updateCurrentChunkCompleteStatus(ctx context.Context, curCh *ReadOffset, instance, category, addr string) error {
-	chunks, err := s.ListChunks(ctx, category, addr, false)
+	chunks, err := s.cl.ListChunks(ctx, addr, category, false)
 	if err != nil {
 		return fmt.Errorf("listChunks failed: %v", err)
 	}
@@ -347,74 +281,5 @@ func (s *Simple) updateCurrentChunkCompleteStatus(ctx context.Context, curCh *Re
 		}
 	}
 
-	return nil
-}
-
-// ListChunks returns the list of chunks for the appropriate Chukcha instance.
-// TODO: extract this into a separate client.
-func (s *Simple) ListChunks(ctx context.Context, category, addr string, fromReplication bool) ([]protocol.Chunk, error) {
-	u := url.Values{}
-	u.Add("category", category)
-	if fromReplication {
-		u.Add("from_replication", "1")
-	}
-
-	listURL := fmt.Sprintf("%s/listChunks?%s", addr, u.Encode())
-
-	req, err := http.NewRequestWithContext(ctx, "GET", listURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating new http request: %w", err)
-	}
-
-	resp, err := s.cl.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			return nil, err
-		}
-
-		return nil, fmt.Errorf("listChunks error: %s", body)
-	}
-
-	var res []protocol.Chunk
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return nil, err
-	}
-
-	if s.Debug {
-		s.logger().Printf("ListChunks(%q) returned %+v", addr, res)
-	}
-
-	return res, nil
-}
-
-func (s *Simple) ackCurrentChunk(instance, category, addr string) error {
-	curCh := s.st.Offsets[instance]
-
-	u := url.Values{}
-	u.Add("chunk", curCh.CurChunk.Name)
-	u.Add("size", strconv.Itoa(int(curCh.Off)))
-	u.Add("category", category)
-
-	resp, err := s.cl.Get(fmt.Sprintf(addr+"/ack?%s", u.Encode()))
-	if err != nil {
-		return err
-	}
-
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		var b bytes.Buffer
-		io.Copy(&b, resp.Body)
-		return fmt.Errorf("http code %d, %s", resp.StatusCode, b.String())
-	}
-
-	io.Copy(ioutil.Discard, resp.Body)
 	return nil
 }
