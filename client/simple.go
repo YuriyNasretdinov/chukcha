@@ -18,9 +18,9 @@ const defaultScratchSize = 64 * 1024
 
 // Simple represents an instance of client connected to a set of Chukcha servers.
 type Simple struct {
-	Debug  bool
 	Logger *log.Logger
 
+	debug bool
 	addrs []string
 	cl    *Raw
 
@@ -44,6 +44,12 @@ func NewSimple(addrs []string) *Simple {
 		cl:    NewRaw(&http.Client{}),
 		st:    &state{Offsets: make(map[string]*ReadOffset)},
 	}
+}
+
+// SetDebug either enables or disables debug logging for the client.
+func (s *Simple) SetDebug(v bool) {
+	s.debug = v
+	s.cl.SetDebug(v)
 }
 
 // MarshalState returns the simple client state that stores
@@ -112,7 +118,7 @@ func (s *Simple) processInstance(ctx context.Context, addr, instance, category s
 
 		err := s.process(ctx, addr, instance, category, scratch, processFn)
 		if err == errRetry {
-			if s.Debug {
+			if s.debug {
 				s.logger().Printf("Retrying reading category %q (got error %v)", category, err)
 			}
 			continue
@@ -129,11 +135,16 @@ func (s *Simple) getAddr() string {
 func (s *Simple) process(ctx context.Context, addr, instance, category string, scratch []byte, processFn func([]byte) error) error {
 	curCh := s.st.Offsets[instance]
 
+	// TODO: design Client better :).
+	if curCh.CurChunk.Name == "" {
+		return io.EOF
+	}
+
 	res, found, err := s.cl.Read(ctx, addr, category, curCh.CurChunk.Name, curCh.Off, scratch)
 	if err != nil {
 		return err
 	} else if !found {
-		if s.Debug {
+		if s.debug {
 			s.logger().Printf("Chunk %+v is missing at %q, probably hasn't replicated yet, skipping", curCh.CurChunk.Name, addr)
 		}
 		return nil
@@ -162,7 +173,7 @@ func (s *Simple) process(ctx context.Context, addr, instance, category string, s
 		// The chunk has been marked complete. However, new data appeared
 		// in between us sending the read request and the chunk becoming complete.
 		if curCh.Off < curCh.CurChunk.Size {
-			if s.Debug {
+			if s.debug {
 				s.logger().Printf(`errRetry: The chunk %q has been marked complete. However, new data appeared in between us sending the read request and the chunk becoming complete. (curCh.Off < curCh.CurChunk.Size) = (%v < %v)`, curCh.CurChunk.Name, curCh.Off, curCh.CurChunk.Size)
 			}
 			return errRetry
@@ -180,7 +191,7 @@ func (s *Simple) process(ctx context.Context, addr, instance, category string, s
 		curCh.CurChunk = protocol.Chunk{}
 		curCh.Off = 0
 
-		if s.Debug {
+		if s.debug {
 			s.logger().Printf(`errRetry: need to read the next chunk so that we do not return empty response`)
 		}
 		return errRetry
@@ -206,6 +217,11 @@ func (s *Simple) updateCurrentChunks(ctx context.Context, category, addr string)
 
 	chunksByInstance := make(map[string][]protocol.Chunk)
 	for _, c := range chunks {
+		// TODO: design Client better.
+		if c.Size == 0 {
+			continue
+		}
+
 		instance, chunkIdx := protocol.ParseChunkFileName(c.Name)
 		if chunkIdx < 0 {
 			continue

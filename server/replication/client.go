@@ -72,13 +72,16 @@ func NewClient(logger *log.Logger, st *State, wr DirectWriter, instanceName stri
 		Timeout: defaultClientTimeout,
 	}
 
+	raw := client.NewRaw(httpCl)
+	raw.Logger = logger
+
 	return &Client{
 		logger:       logger,
 		state:        st,
 		wr:           wr,
 		instanceName: instanceName,
 		httpCl:       httpCl,
-		r:            client.NewRaw(httpCl),
+		r:            raw,
 		perCategory:  make(map[string]*CategoryDownloader),
 	}
 }

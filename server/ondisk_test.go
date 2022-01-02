@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/YuriyNasretdinov/chukcha/protocol"
 )
@@ -23,57 +24,6 @@ func TestInitLastChunkIdx(t *testing.T) {
 
 	if got != want {
 		t.Errorf("Last chunk index = %d, want %d", got, want)
-	}
-}
-
-func TestGetFileDescriptor(t *testing.T) {
-	dir := getTempDir(t)
-	testCreateFile(t, filepath.Join(dir, "moscow-chunk1"))
-	srv := testNewOnDisk(t, dir)
-
-	testCases := []struct {
-		desc     string
-		filename string
-		write    bool
-		wantErr  bool
-	}{
-		{
-			desc:     "Read from already existing file should not fail",
-			filename: "moscow-chunk1",
-			write:    false,
-			wantErr:  false,
-		},
-		{
-			desc:     "Should not overwrite existing files",
-			filename: "moscow-chunk1",
-			write:    true,
-			wantErr:  true,
-		},
-		{
-			desc:     "Should not be to read from files that don't exist",
-			filename: "moscow-chunk2",
-			write:    false,
-			wantErr:  true,
-		},
-		{
-			desc:     "Should be able to create files that don't exist",
-			filename: "moscow-chunk2",
-			write:    true,
-			wantErr:  false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.desc, func(t *testing.T) {
-			_, err := srv.getFileDescriptor(tc.filename, tc.write)
-			defer srv.forgetFileDescriptor(tc.filename)
-
-			if tc.wantErr && err == nil {
-				t.Errorf("wanted error, got not errors")
-			} else if !tc.wantErr && err != nil {
-				t.Errorf("wanted no errors, got error %v", err)
-			}
-		})
 	}
 }
 
@@ -179,7 +129,7 @@ func (n *nilHooks) AfterAcknowledgeChunk(ctx context.Context, category string, f
 func testNewOnDisk(t *testing.T, dir string) *OnDisk {
 	t.Helper()
 
-	srv, err := NewOnDisk(log.Default(), dir, "test", "moscow", 20*1024*1024, &nilHooks{})
+	srv, err := NewOnDisk(log.Default(), dir, "test", "moscow", 20*1024*1024, time.Minute, &nilHooks{})
 	if err != nil {
 		t.Fatalf("NewOnDisk(): %v", err)
 	}

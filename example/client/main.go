@@ -30,6 +30,7 @@ func main() {
 	flag.Parse()
 
 	ctx := context.Background()
+	debug := false
 
 	addrs := []string{"http://127.0.0.1:8080", "http://127.0.0.1:8081"}
 
@@ -40,11 +41,11 @@ func main() {
 		}
 	}
 
-	// cl.Debug = true
+	cl.SetDebug(debug)
 
 	fmt.Printf("Enter the messages into the prompt to send them to one of Chukcha replicas\n")
 
-	go printContiniously(ctx, cl)
+	go printContiniously(ctx, cl, debug)
 
 	rd := bufio.NewReader(os.Stdin)
 	fmt.Printf("> ")
@@ -103,7 +104,7 @@ func saveState(cl *client.Simple) {
 	fmt.Println("")
 }
 
-func printContiniously(ctx context.Context, cl *client.Simple) {
+func printContiniously(ctx context.Context, cl *client.Simple, debug bool) {
 	scratch := make([]byte, 1024*1024)
 
 	for {
@@ -114,7 +115,7 @@ func printContiniously(ctx context.Context, cl *client.Simple) {
 			return nil
 		})
 
-		if cl.Debug {
+		if debug {
 			time.Sleep(time.Millisecond * 10000)
 		} else {
 			time.Sleep(time.Millisecond * 100)

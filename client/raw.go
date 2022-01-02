@@ -20,10 +20,10 @@ import (
 // The intended use case is to build your own clients if
 // you need it.
 type Raw struct {
-	Debug  bool
 	Logger *log.Logger
 
-	cl *http.Client
+	debug bool
+	cl    *http.Client
 }
 
 // NewRaw creates a Raw client instance
@@ -35,6 +35,11 @@ func NewRaw(cl *http.Client) *Raw {
 	return &Raw{
 		cl: cl,
 	}
+}
+
+// SetDebug either enables or disables debug logging for the client.
+func (r *Raw) SetDebug(v bool) {
+	r.debug = v
 }
 
 func (r *Raw) logger() *log.Logger {
@@ -52,7 +57,7 @@ func (r *Raw) Write(ctx context.Context, addr string, category string, msgs []by
 
 	url := addr + "/write?" + u.Encode()
 
-	if r.Debug {
+	if r.debug {
 		debugMsgs := msgs
 		if len(debugMsgs) > 128 {
 			debugMsgs = []byte(fmt.Sprintf("%s... (%d bytes total)", msgs[0:128], len(msgs)))
@@ -92,7 +97,7 @@ func (r *Raw) Read(ctx context.Context, addr string, category string, chunk stri
 
 	readURL := fmt.Sprintf("%s/read?%s", addr, u.Encode())
 
-	if r.Debug {
+	if r.debug {
 		r.logger().Printf("Reading from %s", readURL)
 	}
 
@@ -162,7 +167,7 @@ func (r *Raw) ListChunks(ctx context.Context, addr, category string, fromReplica
 		return nil, err
 	}
 
-	if r.Debug {
+	if r.debug {
 		r.logger().Printf("ListChunks(%q) returned %+v", addr, res)
 	}
 

@@ -112,8 +112,7 @@ If you really want to use Chukcha, please refer to the simple Go client library 
 1. Compute code coverage.
 1. Write replication tests
 1. Rotate chunks not only based on the size but also based on time passed, to allow chunks downloaded from other servers to be forcefully finalised upon failure.
-1. When replicating acknowledge requests don't ignore etcd errors, record the errors somewhere so that when etcd has come up we can replay the ack requests on other replicas to clean up space.
-1. Make sure that acknowledge requests don't delete chunks that haven't been downloaded yet. Cancel chunks that are being downloaded that are already acknowledged.
 1. Investigate the following test failure: `main_test.go:48: sendAndReceiveConcurrently: receive: GET "http://localhost:40341/read?category=numbers&chunk=&maxSize=1048576&off=0": http code 400, bad "chunk" GET param: chunk name must be provided`
 1. Make sure server checks that events that are sent are whole lines
 1. Check maxSize in read requests to not exceed 16 MiB
+1. Write a garbage collector for tombstones (".deleted" files) and make a fallback mechanism to acknowledge chunks when we failed to replicate acknowledge request.

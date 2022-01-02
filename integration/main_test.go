@@ -106,10 +106,18 @@ func runChukcha(t *testing.T, withReplica bool, w tweaks) (addrs []string, etcdA
 		t.Fatalf("Failed to get free port: %v", err)
 	}
 
-	dbPath, err := os.MkdirTemp(t.TempDir(), "chukcha-moscow")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	dbPath := t.TempDir()
+
+	// Chukcha creates empty chunks in background every 100ms,
+	// so it is possible that the directory removal will fail
+	// on the first try.
+	t.Cleanup(func() {
+		for i := 0; i < 10; i++ {
+			if err := os.RemoveAll(dbPath); err == nil {
+				return
+			}
+		}
+	})
 
 	if w.dbInitFn != nil {
 		w.dbInitFn(t, dbPath)
@@ -131,23 +139,20 @@ func runChukcha(t *testing.T, withReplica bool, w tweaks) (addrs []string, etcdA
 		// if it is a replica
 		if port != port1 {
 			instanceName = "voronezh"
-
-			dirName, err = os.MkdirTemp(t.TempDir(), "chukcha-"+instanceName)
-			if err != nil {
-				t.Fatalf("Failed to create temp dir: %v", err)
-			}
+			dirName = t.TempDir()
 		}
 
 		errCh := make(chan error, 1)
 		go func(port int) {
 			a := InitArgs{
-				LogWriter:    log.Default().Writer(),
-				EtcdAddr:     []string{etcdAddr},
-				InstanceName: instanceName,
-				ClusterName:  "testRussia",
-				DirName:      dirName,
-				ListenAddr:   fmt.Sprintf("localhost:%d", port),
-				MaxChunkSize: 20 * 1024 * 1024,
+				LogWriter:           log.Default().Writer(),
+				EtcdAddr:            []string{etcdAddr},
+				InstanceName:        instanceName,
+				ClusterName:         "testRussia",
+				DirName:             dirName,
+				ListenAddr:          fmt.Sprintf("localhost:%d", port),
+				MaxChunkSize:        20 * 1024 * 1024,
+				RotateChunkInterval: 50 * time.Millisecond,
 			}
 
 			if w.modifyInitArgs != nil {

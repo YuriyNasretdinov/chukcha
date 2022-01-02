@@ -26,7 +26,8 @@ type InitArgs struct {
 	DirName    string
 	ListenAddr string
 
-	MaxChunkSize uint64
+	MaxChunkSize        uint64
+	RotateChunkInterval time.Duration
 
 	// The next set of parameters is only set in tests.
 	DisableAcknowledge bool
@@ -35,7 +36,7 @@ type InitArgs struct {
 // InitAndServe checks validity of the supplied arguments and starts
 // the web server on the specified port.
 func InitAndServe(a InitArgs) error {
-	logger := log.New(a.LogWriter, "["+a.InstanceName+"] ", log.LstdFlags)
+	logger := log.New(a.LogWriter, "["+a.InstanceName+"] ", log.LstdFlags|log.Lmicroseconds)
 
 	replState, err := replication.NewState(logger, a.EtcdAddr, a.ClusterName)
 	if err != nil {
@@ -62,12 +63,13 @@ func InitAndServe(a InitArgs) error {
 
 	replStorage := replication.NewStorage(logger, replState, a.InstanceName)
 	creator := &OnDiskCreator{
-		logger:       logger,
-		dirName:      a.DirName,
-		instanceName: a.InstanceName,
-		replStorage:  replStorage,
-		storages:     make(map[string]*server.OnDisk),
-		maxChunkSize: a.MaxChunkSize,
+		logger:              logger,
+		dirName:             a.DirName,
+		instanceName:        a.InstanceName,
+		replStorage:         replStorage,
+		storages:            make(map[string]*server.OnDisk),
+		maxChunkSize:        a.MaxChunkSize,
+		rotateChunkInterval: a.RotateChunkInterval,
 	}
 
 	s := web.NewServer(logger, replState, a.InstanceName, a.DirName, a.ListenAddr, replStorage, creator.Get)
@@ -80,11 +82,12 @@ func InitAndServe(a InitArgs) error {
 }
 
 type OnDiskCreator struct {
-	logger       *log.Logger
-	dirName      string
-	instanceName string
-	replStorage  *replication.Storage
-	maxChunkSize uint64
+	logger              *log.Logger
+	dirName             string
+	instanceName        string
+	replStorage         *replication.Storage
+	maxChunkSize        uint64
+	rotateChunkInterval time.Duration
 
 	m        sync.Mutex
 	storages map[string]*server.OnDisk
@@ -154,5 +157,5 @@ func (c *OnDiskCreator) newOnDisk(logger *log.Logger, category string) (*server.
 		return nil, fmt.Errorf("creating directory for the category: %v", err)
 	}
 
-	return server.NewOnDisk(logger, dir, category, c.instanceName, c.maxChunkSize, c.replStorage)
+	return server.NewOnDisk(logger, dir, category, c.instanceName, c.maxChunkSize, c.rotateChunkInterval, c.replStorage)
 }

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/YuriyNasretdinov/chukcha/protocol"
 )
@@ -35,17 +36,15 @@ type OnDisk struct {
 	repl StorageHooks
 
 	writeMu                     sync.Mutex
+	lastChunkFp                 *os.File
 	lastChunk                   string
 	lastChunkSize               uint64
 	lastChunkIdx                uint64
 	lastChunkAddedToReplication bool
-
-	fpsMu sync.Mutex
-	fps   map[string]*os.File
 }
 
 // NewOnDisk creates a server that stores all it's data on disk.
-func NewOnDisk(logger *log.Logger, dirname, category, instanceName string, maxChunkSize uint64, repl StorageHooks) (*OnDisk, error) {
+func NewOnDisk(logger *log.Logger, dirname, category, instanceName string, maxChunkSize uint64, rotateChunkInterval time.Duration, repl StorageHooks) (*OnDisk, error) {
 	s := &OnDisk{
 		logger:       logger,
 		dirname:      dirname,
@@ -53,12 +52,13 @@ func NewOnDisk(logger *log.Logger, dirname, category, instanceName string, maxCh
 		instanceName: instanceName,
 		repl:         repl,
 		maxChunkSize: maxChunkSize,
-		fps:          make(map[string]*os.File),
 	}
 
 	if err := s.initLastChunkIdx(dirname); err != nil {
 		return nil, err
 	}
+
+	go s.createNextChunkThread(rotateChunkInterval)
 
 	return s, nil
 }
@@ -100,71 +100,115 @@ func (s *OnDisk) WriteDirect(chunk string, contents []byte) error {
 	return err
 }
 
+func (s *OnDisk) createNextChunkThread(interval time.Duration) {
+	for {
+		time.Sleep(interval)
+
+		if err := s.tryCreateNextEmptyChunkIfNeeded(); err != nil {
+			s.logger.Printf("Creating next empty chunk in background failed: %v", err)
+		}
+	}
+}
+
+func (s *OnDisk) tryCreateNextEmptyChunkIfNeeded() error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	if s.lastChunkSize == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	s.logger.Printf("Creating empty chunk from timer")
+
+	return s.createNextChunk(ctx)
+}
+
+// createNextChunk creates a new chunk and closes
+// the previous file descriptor if needed.
+//
+// This method is meant to be used either from a timer
+// to close the active chunk or to create a new chunk
+// when the max chunk is exceeded.
+func (s *OnDisk) createNextChunk(ctx context.Context) error {
+	if s.lastChunkFp != nil {
+		s.lastChunkFp.Close()
+		s.lastChunkFp = nil
+	}
+
+	newChunk := fmt.Sprintf("%s-chunk%09d", s.instanceName, s.lastChunkIdx)
+
+	fp, err := os.OpenFile(filepath.Join(s.dirname, newChunk), os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		return err
+	}
+	defer fp.Close()
+
+	s.lastChunk = newChunk
+	s.lastChunkSize = 0
+	s.lastChunkIdx++
+	s.lastChunkAddedToReplication = false
+
+	if err := s.repl.AfterCreatingChunk(ctx, s.category, s.lastChunk); err != nil {
+		return fmt.Errorf("after creating new chunk: %w", err)
+	}
+
+	s.lastChunkAddedToReplication = true
+
+	return nil
+}
+
+func (s *OnDisk) getLastChunkFp() (*os.File, error) {
+	if s.lastChunkFp != nil {
+		return s.lastChunkFp, nil
+	}
+
+	fp, err := os.OpenFile(filepath.Join(s.dirname, s.lastChunk), os.O_WRONLY, 0666)
+	if err != nil {
+		return nil, fmt.Errorf("open chunk for writing: %v", err)
+	}
+	s.lastChunkFp = fp
+
+	return fp, nil
+}
+
 // Write accepts the messages from the clients and stores them.
 func (s *OnDisk) Write(ctx context.Context, msgs []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	if s.lastChunk == "" || (s.lastChunkSize+uint64(len(msgs)) > s.maxChunkSize) {
-		s.lastChunk = fmt.Sprintf("%s-chunk%09d", s.instanceName, s.lastChunkIdx)
-		s.lastChunkSize = 0
-		s.lastChunkIdx++
-		s.lastChunkAddedToReplication = false
-	}
+	willExceedMaxChunkSize := s.lastChunkSize+uint64(len(msgs)) > s.maxChunkSize
 
-	fp, err := s.getFileDescriptor(s.lastChunk, true)
-	if err != nil {
-		return err
+	if s.lastChunk == "" || (s.lastChunkSize > 0 && willExceedMaxChunkSize) {
+		if err := s.createNextChunk(ctx); err != nil {
+			return fmt.Errorf("creating next chunk %v", err)
+		}
 	}
 
 	if !s.lastChunkAddedToReplication {
 		if err := s.repl.AfterCreatingChunk(ctx, s.category, s.lastChunk); err != nil {
 			return fmt.Errorf("after creating new chunk: %w", err)
 		}
-
-		s.lastChunkAddedToReplication = true
 	}
 
-	_, err = fp.Write(msgs)
-	s.lastChunkSize += uint64(len(msgs))
-	return err
-}
-
-func (s *OnDisk) getFileDescriptor(chunk string, write bool) (*os.File, error) {
-	s.fpsMu.Lock()
-	defer s.fpsMu.Unlock()
-
-	fp, ok := s.fps[chunk]
-	if ok {
-		return fp, nil
-	}
-
-	fl := os.O_RDONLY
-	if write {
-		fl = os.O_RDWR | os.O_CREATE | os.O_EXCL
-	}
-
-	filename := filepath.Join(s.dirname, chunk)
-	fp, err := os.OpenFile(filename, fl, 0666)
+	fp, err := s.getLastChunkFp()
 	if err != nil {
-		return nil, fmt.Errorf("create file %q: %w", filename, err)
+		return err
 	}
 
-	s.fps[chunk] = fp
-	return fp, nil
-}
+	n, err := fp.Write(msgs)
+	if err != nil {
+		if truncateErr := fp.Truncate(int64(s.lastChunkSize)); truncateErr != nil {
+			s.logger.Printf("Failed to truncate %s: %v", fp.Name(), err)
+		}
 
-func (s *OnDisk) forgetFileDescriptor(chunk string) {
-	s.fpsMu.Lock()
-	defer s.fpsMu.Unlock()
-
-	fp, ok := s.fps[chunk]
-	if !ok {
-		return
+		return err
 	}
 
-	fp.Close()
-	delete(s.fps, chunk)
+	s.lastChunkSize += uint64(n)
+	return err
 }
 
 // Read copies the data from the in-memory store and writes
@@ -177,10 +221,11 @@ func (s *OnDisk) Read(chunk string, off uint64, maxSize uint64, w io.Writer) err
 		return fmt.Errorf("stat %q: %w", chunk, err)
 	}
 
-	fp, err := s.getFileDescriptor(chunk, false)
+	fp, err := os.Open(filepath.Join(s.dirname, chunk))
 	if err != nil {
-		return fmt.Errorf("getFileDescriptor(%q): %w", chunk, err)
+		return fmt.Errorf("Open(%q): %w", chunk, err)
 	}
+	defer fp.Close()
 
 	buf := make([]byte, maxSize)
 	n, err := fp.ReadAt(buf, int64(off))
@@ -239,11 +284,9 @@ func (s *OnDisk) Ack(ctx context.Context, chunk string, size uint64) error {
 
 	// We ignore the error here so that we can continue reading chunks when etcd is down.
 	if err := s.repl.AfterAcknowledgeChunk(ctx, s.category, chunk); err != nil {
-		// TODO: remember the ack request still
 		s.logger.Printf("Failed to replicate ack request: %v", err)
 	}
 
-	s.forgetFileDescriptor(chunk)
 	return nil
 }
 
@@ -274,7 +317,6 @@ func (s *OnDisk) AckDirect(chunk string) error {
 		return fmt.Errorf("removing %q: %v", chunk, err)
 	}
 
-	s.forgetFileDescriptor(chunk)
 	return nil
 }
 
