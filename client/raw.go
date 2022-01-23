@@ -51,7 +51,7 @@ func (r *Raw) logger() *log.Logger {
 }
 
 // Write sends the events to the appropriate Chukcha server.
-func (r *Raw) Write(ctx context.Context, addr string, category string, msgs []byte) error {
+func (r *Raw) Write(ctx context.Context, addr string, category string, msgs []byte) (err error) {
 	u := url.Values{}
 	u.Add("category", category)
 
@@ -63,6 +63,7 @@ func (r *Raw) Write(ctx context.Context, addr string, category string, msgs []by
 			debugMsgs = []byte(fmt.Sprintf("%s... (%d bytes total)", msgs[0:128], len(msgs)))
 		}
 		r.logger().Printf("Sending to %s the following messages: %q", url, debugMsgs)
+		defer func() { r.logger().Printf("Send result: err=%v", err) }()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(msgs))
@@ -99,6 +100,7 @@ func (r *Raw) Read(ctx context.Context, addr string, category string, chunk stri
 
 	if r.debug {
 		r.logger().Printf("Reading from %s", readURL)
+		defer func() { r.logger().Printf("Read returned: res=%d bytes, found=%v, err=%v", len(res), found, err) }()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", readURL, nil)
@@ -179,6 +181,10 @@ func (r *Raw) Ack(ctx context.Context, addr, category, chunk string, size uint64
 	u.Add("chunk", chunk)
 	u.Add("size", strconv.FormatInt(int64(size), 10))
 	u.Add("category", category)
+
+	if r.debug {
+		r.logger().Printf("Acknowledging category %q chunk %q with size %d at %q", category, chunk, size, addr)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf(addr+"/ack?%s", u.Encode()), nil)
 	if err != nil {

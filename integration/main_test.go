@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -191,7 +190,9 @@ func simpleClientAndServerTest(t *testing.T, concurrent, withReplica bool) {
 	log.Printf("Starting the test")
 
 	s := client.NewSimple(addrs)
-	// s.Debug = true
+	if os.Getenv("CHUKCHA_DEBUG") == "1" {
+		s.SetDebug(true)
+	}
 
 	var want, got int64
 	var err error
@@ -391,22 +392,13 @@ func receive(ctx context.Context, s *client.Simple, sendFinishedCh chan time.Tim
 
 		if errors.Is(err, errRandomTemp) {
 			continue
-		} else if errors.Is(err, io.EOF) {
-			if sendFinished {
-				if !withReplica {
-					return sum, nil
-				}
-
-				if sum >= maxExpectedSum || time.Since(sendFinishedTs) >= 10*time.Second {
-					log.Printf("sum (%d) >= maxExpectedSum (%d) || time.Since(sendFinishedTs) (%s) >= 10*time.Second", sum, maxExpectedSum, time.Since(sendFinishedTs))
-					return sum, nil
-				}
-			}
-
-			time.Sleep(time.Millisecond * 10)
-			continue
 		} else if err != nil {
 			return 0, err
+		}
+
+		if sendFinished && (sum >= maxExpectedSum || time.Since(sendFinishedTs) >= 10*time.Second) {
+			log.Printf("sum (%d) >= maxExpectedSum (%d) || time.Since(sendFinishedTs) (%s) >= 10*time.Second", sum, maxExpectedSum, time.Since(sendFinishedTs))
+			return sum, nil
 		}
 	}
 }

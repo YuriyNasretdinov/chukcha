@@ -246,7 +246,7 @@ func (c *CategoryDownloader) downloadAllChunksUpToIteration(ctx context.Context,
 		}
 
 		// TODO: test downloading empty chunks
-		if !exists || ch.Size > uint64(size) || !ch.Complete {
+		if !exists || ch.Size > uint64(size) || !ch.Complete || (ch.Complete && ch.Size == 0) {
 			c.downloadChunk(ctx, Chunk{
 				Owner:    toReplicate.Owner,
 				Category: toReplicate.Category,
@@ -310,7 +310,7 @@ func (c *CategoryDownloader) downloadChunk(parentCtx context.Context, ch Chunk) 
 }
 
 func (c *CategoryDownloader) downloadChunkIteration(ctx context.Context, ch Chunk) error {
-	size, _, _, err := c.wr.Stat(ch.Category, ch.FileName)
+	size, exists, _, err := c.wr.Stat(ch.Category, ch.FileName)
 	if err != nil {
 		return fmt.Errorf("getting file stat: %v", err)
 	}
@@ -328,7 +328,7 @@ func (c *CategoryDownloader) downloadChunkIteration(ctx context.Context, ch Chun
 		return err
 	}
 
-	if uint64(size) >= info.Size {
+	if exists && uint64(size) >= info.Size {
 		if !info.Complete {
 			return errIncomplete
 		}

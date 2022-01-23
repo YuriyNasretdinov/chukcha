@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/YuriyNasretdinov/chukcha/protocol"
 )
@@ -20,9 +21,10 @@ const defaultScratchSize = 64 * 1024
 type Simple struct {
 	Logger *log.Logger
 
-	debug bool
-	addrs []string
-	cl    *Raw
+	pollInterval time.Duration
+	debug        bool
+	addrs        []string
+	cl           *Raw
 
 	st *state
 }
@@ -40,10 +42,18 @@ type state struct {
 // NewSimple creates a new client for the Chukcha server.
 func NewSimple(addrs []string) *Simple {
 	return &Simple{
-		addrs: addrs,
-		cl:    NewRaw(&http.Client{}),
-		st:    &state{Offsets: make(map[string]*ReadOffset)},
+		addrs:        addrs,
+		pollInterval: time.Millisecond * 100,
+		cl:           NewRaw(&http.Client{}),
+		st:           &state{Offsets: make(map[string]*ReadOffset)},
 	}
+}
+
+// SetPollInterval sets the interval that is used to poll
+// Chukcha when there are no new messages to process.
+// (default is 100ms)
+func (s *Simple) SetPollInterval(d time.Duration) {
+	s.pollInterval = d
 }
 
 // SetDebug either enables or disables debug logging for the client.
@@ -73,6 +83,10 @@ func (s *Simple) logger() *log.Logger {
 }
 
 // Send sends the messages to the Chukcha servers.
+//
+// TODO: don't just write a random address, write to
+// the preferred server and then try next one if
+// request failed.
 func (s *Simple) Send(ctx context.Context, category string, msgs []byte) error {
 	return s.cl.Write(ctx, s.getAddr(), category, msgs)
 }
@@ -81,7 +95,16 @@ var errRetry = errors.New("please retry the request")
 
 // Process will either wait for new messages or return an
 // error in case something goes wrong.
+//
 // The scratch buffer can be used to read the data.
+// The size of scratch buffer determines the maximum
+// batch size that will read (e.g. if scratch buffer's
+// length is 1024 bytes, then no more than 1024 bytes
+// at a time will be read from Chukcha). Suggested
+// batch size is determined by your own needs, e.g.
+// if you want to process data in big chunks, then
+// scratch buffer needs to be 10 MiB or more.
+//
 // The read offset will advance only if processFn()
 // returns no errors for the data being processed.
 func (s *Simple) Process(ctx context.Context, category string, scratch []byte, processFn func([]byte) error) error {
@@ -89,42 +112,52 @@ func (s *Simple) Process(ctx context.Context, category string, scratch []byte, p
 		scratch = make([]byte, defaultScratchSize)
 	}
 
-	addr := s.getAddr()
+	for {
+		err := s.tryProcess(ctx, category, scratch, processFn)
+		if err == nil {
+			return nil
+		} else if errors.Is(err, errRetry) {
+			continue
+		} else if !errors.Is(err, io.EOF) {
+			return err
+		}
 
-	// If there are no servers known, populate the list of current chunks.
-	if len(s.st.Offsets) == 0 {
-		if err := s.updateCurrentChunks(ctx, category, addr); err != nil {
-			return fmt.Errorf("updateCurrentChunk: %w", err)
+		select {
+		case <-time.After(s.pollInterval):
+		case <-ctx.Done():
+			return context.Canceled
 		}
 	}
+}
+
+func (s *Simple) tryProcess(ctx context.Context, category string, scratch []byte, processFn func([]byte) error) error {
+	addr := s.getAddr()
+
+	if err := s.updateOffsets(ctx, category, addr); err != nil {
+		return fmt.Errorf("updateCurrentChunk: %w", err)
+	}
+
+	needRetry := false
 
 	for instance := range s.st.Offsets {
 		err := s.processInstance(ctx, addr, instance, category, scratch, processFn)
 		if errors.Is(err, io.EOF) {
 			continue
+		} else if errors.Is(err, errRetry) {
+			needRetry = true
+			continue
 		}
 
 		return err
+	}
+
+	// Retry means "I finished processing, retry immediately",
+	// which is different from io.EOF, which means "we read everything".
+	if needRetry {
+		return errRetry
 	}
 
 	return io.EOF
-}
-
-func (s *Simple) processInstance(ctx context.Context, addr, instance, category string, scratch []byte, processFn func([]byte) error) error {
-	for {
-		if err := s.updateCurrentChunks(ctx, category, addr); err != nil {
-			return fmt.Errorf("updateCurrentChunk: %w", err)
-		}
-
-		err := s.process(ctx, addr, instance, category, scratch, processFn)
-		if err == errRetry {
-			if s.debug {
-				s.logger().Printf("Retrying reading category %q (got error %v)", category, err)
-			}
-			continue
-		}
-		return err
-	}
 }
 
 func (s *Simple) getAddr() string {
@@ -132,96 +165,105 @@ func (s *Simple) getAddr() string {
 	return s.addrs[addrIdx]
 }
 
-func (s *Simple) process(ctx context.Context, addr, instance, category string, scratch []byte, processFn func([]byte) error) error {
+func (s *Simple) processInstance(ctx context.Context, addr, instance, category string, scratch []byte, processFn func([]byte) error) error {
 	curCh := s.st.Offsets[instance]
-
-	// TODO: design Client better :).
-	if curCh.CurChunk.Name == "" {
-		return io.EOF
-	}
 
 	res, found, err := s.cl.Read(ctx, addr, category, curCh.CurChunk.Name, curCh.Off, scratch)
 	if err != nil {
 		return err
 	} else if !found {
+		// TODO: if there are newer chunks than the one that we are processing,
+		// update current chunk.
+		// If the chunk that we are reading right now was acknowledged already,
+		// then it we will never read newer chunks. This can happen if our state
+		// is stale (e.g. client crashed and didn't save the last offset).
 		if s.debug {
 			s.logger().Printf("Chunk %+v is missing at %q, probably hasn't replicated yet, skipping", curCh.CurChunk.Name, addr)
 		}
-		return nil
+		return io.EOF
+	}
+
+	if len(res) > 0 {
+		err = processFn(res)
+		if err == nil {
+			curCh.Off += uint64(len(res))
+		}
+
+		return err
 	}
 
 	// 0 bytes read but no errors means the end of file by convention.
-	if len(res) == 0 {
-		if !curCh.CurChunk.Complete {
-			if err := s.updateCurrentChunkCompleteStatus(ctx, curCh, instance, category, addr); err != nil {
-				return fmt.Errorf("updateCurrentChunkCompleteStatus: %v", err)
-			}
-
-			if !curCh.CurChunk.Complete {
-				// We actually did read until the end and no new data appeared
-				// in between requests.
-				if curCh.Off >= curCh.CurChunk.Size {
-					return io.EOF
-				}
-			} else {
-				// New data appeared in between us sending the read request and
-				// the chunk becoming complete.
-				return errRetry
-			}
-		}
-
-		// The chunk has been marked complete. However, new data appeared
-		// in between us sending the read request and the chunk becoming complete.
-		if curCh.Off < curCh.CurChunk.Size {
-			if s.debug {
-				s.logger().Printf(`errRetry: The chunk %q has been marked complete. However, new data appeared in between us sending the read request and the chunk becoming complete. (curCh.Off < curCh.CurChunk.Size) = (%v < %v)`, curCh.CurChunk.Name, curCh.Off, curCh.CurChunk.Size)
-			}
-			return errRetry
-		}
-
-		if err := s.cl.Ack(ctx, addr, category, curCh.CurChunk.Name, curCh.Off); err != nil {
-			return fmt.Errorf("ack current chunk: %v", err)
-		}
-
-		// need to read the next chunk so that we do not return empty
-		// response
-
-		_, idx := protocol.ParseChunkFileName(curCh.CurChunk.Name)
-		curCh.LastAckedChunkIdx = idx
-		curCh.CurChunk = protocol.Chunk{}
-		curCh.Off = 0
-
+	if !curCh.CurChunk.Complete {
 		if s.debug {
-			s.logger().Printf(`errRetry: need to read the next chunk so that we do not return empty response`)
+			s.logger().Printf("Chunk %+v was read until the end and is not complete, EOF", curCh.CurChunk.Name)
 		}
-		return errRetry
+		return io.EOF
 	}
 
-	err = processFn(res)
-	if err == nil {
-		curCh.Off += uint64(len(res))
+	// Get the next chunk before acknowledging the current one
+	// so that we always have non-empty chunk name.
+	// If we don't have a new chunk name, it can be because
+	// the chunk list was requested from a different replica
+	// that doesn't yet have new chunks.
+	nextChunk, err := s.getNextChunkForInstance(ctx, addr, instance, category, curCh.CurChunk.Name)
+	if errors.Is(err, errNoNewChunks) {
+		if s.debug {
+			s.logger().Printf("No new chunks after chunk %+v, EOF", curCh.CurChunk.Name)
+		}
+		return io.EOF
+	} else if err != nil {
+		return err
 	}
 
-	return err
+	if err := s.cl.Ack(ctx, addr, category, curCh.CurChunk.Name, curCh.Off); err != nil {
+		return fmt.Errorf("ack current chunk: %v", err)
+	}
+
+	if s.debug {
+		s.logger().Printf("Setting next chunk to %q", nextChunk.Name)
+	}
+
+	_, idx := protocol.ParseChunkFileName(curCh.CurChunk.Name)
+	curCh.LastAckedChunkIdx = idx
+	curCh.CurChunk = nextChunk
+	curCh.Off = 0
+
+	if s.debug {
+		s.logger().Printf(`errRetry: need to read the next chunk so that we do not return empty response`)
+	}
+
+	return errRetry
 }
 
-func (s *Simple) updateCurrentChunks(ctx context.Context, category, addr string) error {
+var errNoNewChunks = errors.New("no new chunks")
+
+func (s *Simple) getNextChunkForInstance(ctx context.Context, addr, instance, category string, chunkName string) (protocol.Chunk, error) {
+	_, idx := protocol.ParseChunkFileName(chunkName)
+	lastAckedChunkIndexes := make(map[string]int)
+	lastAckedChunkIndexes[instance] = idx
+	chunksByInstance, err := s.getUnackedChunksGroupedByInstance(ctx, category, addr, lastAckedChunkIndexes)
+	if err != nil {
+		return protocol.Chunk{}, fmt.Errorf("getting chunks list before ack: %v", err)
+	}
+	if len(chunksByInstance[instance]) == 0 {
+		return protocol.Chunk{}, fmt.Errorf("getting new chunks list before ack: unexpected error for instance %q: %w", instance, errNoNewChunks)
+	}
+
+	return chunksByInstance[instance][0], nil
+}
+
+func (s *Simple) getUnackedChunksGroupedByInstance(ctx context.Context, category, addr string, lastAckedChunkIndexes map[string]int) (map[string][]protocol.Chunk, error) {
 	chunks, err := s.cl.ListChunks(ctx, addr, category, false)
 	if err != nil {
-		return fmt.Errorf("listChunks failed: %v", err)
+		return nil, fmt.Errorf("listChunks failed: %v", err)
 	}
 
 	if len(chunks) == 0 {
-		return io.EOF
+		return nil, io.EOF
 	}
 
 	chunksByInstance := make(map[string][]protocol.Chunk)
 	for _, c := range chunks {
-		// TODO: design Client better.
-		if c.Size == 0 {
-			continue
-		}
-
 		instance, chunkIdx := protocol.ParseChunkFileName(c.Name)
 		if chunkIdx < 0 {
 			continue
@@ -230,30 +272,40 @@ func (s *Simple) updateCurrentChunks(ctx context.Context, category, addr string)
 		// We can have chunks that we already acknowledged in the other
 		// replicas (because replication is asynchronous), so we need to
 		// skip them.
-		curChunk, exists := s.st.Offsets[instance]
-		if exists && chunkIdx <= curChunk.LastAckedChunkIdx {
+		lastAckedChunkIdx, exists := lastAckedChunkIndexes[instance]
+		if exists && chunkIdx <= lastAckedChunkIdx {
 			continue
 		}
 
 		chunksByInstance[instance] = append(chunksByInstance[instance], c)
 	}
 
+	return chunksByInstance, nil
+}
+
+func (s *Simple) updateOffsets(ctx context.Context, category, addr string) error {
+	lastAckedChunkIndexes := make(map[string]int, len(s.st.Offsets))
+	for instance, off := range s.st.Offsets {
+		lastAckedChunkIndexes[instance] = off.LastAckedChunkIdx
+	}
+
+	chunksByInstance, err := s.getUnackedChunksGroupedByInstance(ctx, category, addr, lastAckedChunkIndexes)
+	if err != nil {
+		return err
+	}
+
 	for instance, chunks := range chunksByInstance {
-		curChunk, exists := s.st.Offsets[instance]
-		if !exists {
-			curChunk = &ReadOffset{}
+		off, exists := s.st.Offsets[instance]
+		if exists {
+			s.updateCurrentChunkInfo(chunks, off)
+			continue
 		}
 
-		// Name will be empty in two cases:
-		//  1. It is the first time we try to read from this instance.
-		//  2. We read the latest chunk until the end and need to start
-		//     reading a new one.
-		if curChunk.CurChunk.Name == "" {
-			curChunk.CurChunk = s.getOldestChunk(chunks)
-			curChunk.Off = 0
+		s.st.Offsets[instance] = &ReadOffset{
+			CurChunk:          s.getOldestChunk(chunks),
+			LastAckedChunkIdx: -1, // can't use 0 because it would mean that chunk 0 is acked
+			Off:               0,
 		}
-
-		s.st.Offsets[instance] = curChunk
 	}
 
 	return nil
@@ -273,29 +325,16 @@ func (s *Simple) getOldestChunk(chunks []protocol.Chunk) protocol.Chunk {
 	return chunks[0]
 }
 
-func (s *Simple) updateCurrentChunkCompleteStatus(ctx context.Context, curCh *ReadOffset, instance, category, addr string) error {
-	chunks, err := s.cl.ListChunks(ctx, addr, category, false)
-	if err != nil {
-		return fmt.Errorf("listChunks failed: %v", err)
-	}
-
-	// We need to prioritise the chunks that are complete
-	// so that we ack them.
+func (s *Simple) updateCurrentChunkInfo(chunks []protocol.Chunk, curCh *ReadOffset) {
 	for _, c := range chunks {
-		chunkInstance, idx := protocol.ParseChunkFileName(c.Name)
+		_, idx := protocol.ParseChunkFileName(c.Name)
 		if idx < 0 {
-			continue
-		}
-
-		if chunkInstance != instance {
 			continue
 		}
 
 		if c.Name == curCh.CurChunk.Name {
 			curCh.CurChunk = c
-			return nil
+			return
 		}
 	}
-
-	return nil
 }
