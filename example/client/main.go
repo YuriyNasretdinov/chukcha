@@ -108,17 +108,16 @@ func printContiniously(ctx context.Context, cl *client.Simple, debug bool) {
 	scratch := make([]byte, 1024*1024)
 
 	for {
-		cl.Process(ctx, *categoryName, scratch, func(b []byte) error {
+		err := cl.Process(ctx, *categoryName, scratch, func(b []byte) error {
 			fmt.Printf("\n")
 			log.Printf("BATCH: %s", b)
 			fmt.Printf("> ")
 			return nil
 		})
-
-		if debug {
-			time.Sleep(time.Millisecond * 10000)
-		} else {
-			time.Sleep(time.Millisecond * 100)
+		
+		if err != nil {
+			log.Printf("Error processing batch: %v", err)
+			time.Sleep(time.Second)
 		}
 	}
 }
