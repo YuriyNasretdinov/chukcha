@@ -25,6 +25,11 @@ type StorageHooks interface {
 	AfterAcknowledgeChunk(ctx context.Context, category string, fileName string) error
 }
 
+type downloadNotification struct {
+	chunk string
+	size  uint64
+}
+
 // OnDisk stores all the data on disk.
 type OnDisk struct {
 	logger       *log.Logger
@@ -35,6 +40,11 @@ type OnDisk struct {
 
 	repl StorageHooks
 
+	// downloadNoficationMu protects downloadNotifications
+	downloadNoficationMu  sync.Mutex
+	downloadNotifications map[string]*downloadNotification
+
+	// writeMu protects lastChunk* entries
 	writeMu                     sync.Mutex
 	lastChunkFp                 *os.File
 	lastChunk                   string
@@ -46,12 +56,13 @@ type OnDisk struct {
 // NewOnDisk creates a server that stores all it's data on disk.
 func NewOnDisk(logger *log.Logger, dirname, category, instanceName string, maxChunkSize uint64, rotateChunkInterval time.Duration, repl StorageHooks) (*OnDisk, error) {
 	s := &OnDisk{
-		logger:       logger,
-		dirname:      dirname,
-		category:     category,
-		instanceName: instanceName,
-		repl:         repl,
-		maxChunkSize: maxChunkSize,
+		logger:                logger,
+		dirname:               dirname,
+		category:              category,
+		instanceName:          instanceName,
+		repl:                  repl,
+		maxChunkSize:          maxChunkSize,
+		downloadNotifications: make(map[string]*downloadNotification),
 	}
 
 	if err := s.initLastChunkIdx(dirname); err != nil {
@@ -175,7 +186,7 @@ func (s *OnDisk) getLastChunkFp() (*os.File, error) {
 }
 
 // Write accepts the messages from the clients and stores them.
-func (s *OnDisk) Write(ctx context.Context, msgs []byte) error {
+func (s *OnDisk) Write(ctx context.Context, msgs []byte) (chunkName string, off int64, err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
@@ -183,19 +194,19 @@ func (s *OnDisk) Write(ctx context.Context, msgs []byte) error {
 
 	if s.lastChunk == "" || (s.lastChunkSize > 0 && willExceedMaxChunkSize) {
 		if err := s.createNextChunk(ctx); err != nil {
-			return fmt.Errorf("creating next chunk %v", err)
+			return "", 0, fmt.Errorf("creating next chunk %v", err)
 		}
 	}
 
 	if !s.lastChunkAddedToReplication {
 		if err := s.repl.AfterCreatingChunk(ctx, s.category, s.lastChunk); err != nil {
-			return fmt.Errorf("after creating new chunk: %w", err)
+			return "", 0, fmt.Errorf("after creating new chunk: %w", err)
 		}
 	}
 
 	fp, err := s.getLastChunkFp()
 	if err != nil {
-		return err
+		return "", 0, err
 	}
 
 	n, err := fp.Write(msgs)
@@ -204,11 +215,39 @@ func (s *OnDisk) Write(ctx context.Context, msgs []byte) error {
 			s.logger.Printf("Failed to truncate %s: %v", fp.Name(), err)
 		}
 
-		return err
+		return "", 0, err
 	}
 
 	s.lastChunkSize += uint64(n)
-	return err
+	return s.lastChunk, int64(s.lastChunkSize), nil
+}
+
+// Wait waits until the minSyncReplicas report back that they successfully downloaded
+// the respective chunk from us.
+func (s *OnDisk) Wait(ctx context.Context, chunkName string, off uint64, minSyncReplicas uint) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		var replicatedCount uint
+
+		s.downloadNoficationMu.Lock()
+		for _, n := range s.downloadNotifications {
+			if (n.chunk > chunkName) || (n.chunk == chunkName && n.size >= off) {
+				replicatedCount++
+			}
+		}
+		s.downloadNoficationMu.Unlock()
+
+		if replicatedCount >= minSyncReplicas {
+			return nil
+		}
+
+		time.Sleep(time.Millisecond * 100)
+	}
 }
 
 // Read copies the data from the in-memory store and writes
@@ -317,6 +356,19 @@ func (s *OnDisk) AckDirect(chunk string) error {
 		return fmt.Errorf("removing %q: %v", chunk, err)
 	}
 
+	return nil
+}
+
+// ReplicationAck lets writers that are waiting for min_sync_replicas to know
+// that their writes were successful.
+func (s *OnDisk) ReplicationAck(ctx context.Context, chunk, instance string, size uint64) error {
+	s.downloadNoficationMu.Lock()
+	defer s.downloadNoficationMu.Unlock()
+
+	s.downloadNotifications[instance] = &downloadNotification{
+		chunk: chunk,
+		size:  size,
+	}
 	return nil
 }
 

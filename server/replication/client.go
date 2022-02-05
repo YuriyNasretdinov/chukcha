@@ -310,7 +310,7 @@ func (c *CategoryDownloader) downloadChunk(parentCtx context.Context, ch Chunk) 
 }
 
 func (c *CategoryDownloader) downloadChunkIteration(ctx context.Context, ch Chunk) error {
-	size, exists, _, err := c.wr.Stat(ch.Category, ch.FileName)
+	chunkReadOff, exists, _, err := c.wr.Stat(ch.Category, ch.FileName)
 	if err != nil {
 		return fmt.Errorf("getting file stat: %v", err)
 	}
@@ -328,14 +328,14 @@ func (c *CategoryDownloader) downloadChunkIteration(ctx context.Context, ch Chun
 		return err
 	}
 
-	if exists && uint64(size) >= info.Size {
+	if exists && uint64(chunkReadOff) >= info.Size {
 		if !info.Complete {
 			return errIncomplete
 		}
 		return nil
 	}
 
-	buf, err := c.downloadPart(ctx, addr, ch, size)
+	buf, err := c.downloadPart(ctx, addr, ch, chunkReadOff)
 	if err != nil {
 		return fmt.Errorf("downloading chunk: %w", err)
 	}
@@ -344,9 +344,25 @@ func (c *CategoryDownloader) downloadChunkIteration(ctx context.Context, ch Chun
 		return fmt.Errorf("writing chunk: %v", err)
 	}
 
-	size, _, _, err = c.wr.Stat(ch.Category, ch.FileName)
+	size, _, _, err := c.wr.Stat(ch.Category, ch.FileName)
 	if err != nil {
 		return fmt.Errorf("getting file stat: %v", err)
+	}
+
+	// Because writing to disk on the client side of the replication can fail
+	// we must have a separate request to tell the owner of the chunk
+	// that we did successfully download and write locally the downloaded data.
+	//
+	// Note: this request can fail, and it won't be retried by this loop because
+	// the local chunk size is already downloaded to the required size.
+	// However, client wait timeout will solve this issue because the client
+	// should eventually retry the write and they will receive the noticication.
+	// Alternatively, if some other clients write something to this category
+	// in the meantime, replication client will also send ackDownload request
+	// for the new range, and because we only send the final size, it should
+	// notify the client that was waiting for the previous write.
+	if err := c.ackDownload(ctx, addr, ch, uint64(size)); err != nil {
+		return fmt.Errorf("replication ack: %v", err)
 	}
 
 	if uint64(size) < info.Size || !info.Complete {
@@ -432,4 +448,35 @@ func (c *CategoryDownloader) downloadPart(ctx context.Context, addr string, ch C
 	}
 
 	return b.Bytes(), nil
+}
+
+func (c *CategoryDownloader) ackDownload(ctx context.Context, addr string, ch Chunk, size uint64) error {
+	u := url.Values{}
+	u.Add("size", strconv.FormatUint(size, 10))
+	u.Add("chunk", ch.FileName)
+	u.Add("category", ch.Category)
+	u.Add("instance", c.instanceName)
+
+	ackURL := fmt.Sprintf("%s/replication/ack?%s", addr, u.Encode())
+
+	req, err := http.NewRequestWithContext(ctx, "GET", ackURL, nil)
+	if err != nil {
+		return fmt.Errorf("creating http request: %w", err)
+	}
+
+	resp, err := c.httpCl.Do(req)
+	if err != nil {
+		return fmt.Errorf("replication ack %q: %v", ackURL, err)
+	}
+
+	defer resp.Body.Close()
+
+	var b bytes.Buffer
+	_, err = io.Copy(&b, resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("http status code %d, error message %s", resp.StatusCode, b.Bytes())
+	}
+
+	return err
 }

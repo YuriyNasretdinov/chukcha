@@ -62,6 +62,12 @@ func (s *Simple) SetDebug(v bool) {
 	s.cl.SetDebug(v)
 }
 
+// SetMinSyncReplicas sets the value of minSyncReplicas when sending the requests to
+// Chukcha.
+func (s *Simple) SetMinSyncReplicas(v uint) {
+	s.cl.SetMinSyncReplicas(v)
+}
+
 // MarshalState returns the simple client state that stores
 // the offsets that were already read.
 func (s *Simple) MarshalState() ([]byte, error) {

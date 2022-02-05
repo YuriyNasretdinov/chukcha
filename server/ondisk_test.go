@@ -31,7 +31,7 @@ func TestReadWrite(t *testing.T) {
 	srv := testNewOnDisk(t, getTempDir(t))
 
 	want := "one\ntwo\nthree\nfour\n"
-	if err := srv.Write(context.Background(), []byte(want)); err != nil {
+	if _, _, err := srv.Write(context.Background(), []byte(want)); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
@@ -75,7 +75,7 @@ func TestAckOfTheLastChunk(t *testing.T) {
 	srv := testNewOnDisk(t, getTempDir(t))
 
 	want := "one\ntwo\nthree\nfour\n"
-	if err := srv.Write(context.Background(), []byte(want)); err != nil {
+	if _, _, err := srv.Write(context.Background(), []byte(want)); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 

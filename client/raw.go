@@ -22,8 +22,9 @@ import (
 type Raw struct {
 	Logger *log.Logger
 
-	debug bool
-	cl    *http.Client
+	minSyncReplicas uint
+	debug           bool
+	cl              *http.Client
 }
 
 // NewRaw creates a Raw client instance
@@ -42,6 +43,12 @@ func (r *Raw) SetDebug(v bool) {
 	r.debug = v
 }
 
+// SetMinSyncReplicas sets the value of minSyncReplicas when sending the requests to
+// Chukcha.
+func (r *Raw) SetMinSyncReplicas(v uint) {
+	r.minSyncReplicas = v
+}
+
 func (r *Raw) logger() *log.Logger {
 	if r.Logger == nil {
 		return log.Default()
@@ -54,6 +61,9 @@ func (r *Raw) logger() *log.Logger {
 func (r *Raw) Write(ctx context.Context, addr string, category string, msgs []byte) (err error) {
 	u := url.Values{}
 	u.Add("category", category)
+	if r.minSyncReplicas > 0 {
+		u.Add("min_sync_replicas", strconv.FormatUint(uint64(r.minSyncReplicas), 10))
+	}
 
 	url := addr + "/write?" + u.Encode()
 

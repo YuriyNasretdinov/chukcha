@@ -18,6 +18,8 @@ import (
 )
 
 var categoryName = flag.String("category", "stdin", "The category being tested")
+var debug = flag.Bool("debug", false, "Debug mode")
+var minSyncReplicas = flag.Uint("min-sync-replicas", 0, "How many replicas to wait when writing a message")
 
 const simpleStateFilePath = "/tmp/simple-example-state-%s.json"
 
@@ -30,7 +32,6 @@ func main() {
 	flag.Parse()
 
 	ctx := context.Background()
-	debug := false
 
 	addrs := []string{"http://127.0.0.1:8080", "http://127.0.0.1:8081"}
 
@@ -41,11 +42,12 @@ func main() {
 		}
 	}
 
-	cl.SetDebug(debug)
+	cl.SetDebug(*debug)
+	cl.SetMinSyncReplicas(*minSyncReplicas)
 
 	fmt.Printf("Enter the messages into the prompt to send them to one of Chukcha replicas\n")
 
-	go printContiniously(ctx, cl, debug)
+	go printContiniously(ctx, cl, *debug)
 
 	rd := bufio.NewReader(os.Stdin)
 	fmt.Printf("> ")
@@ -90,7 +92,7 @@ func main() {
 			log.Printf("Failed sending data to Chukcha: %v", err)
 		}
 
-		fmt.Printf("> ")
+		fmt.Printf("(send successful)> ")
 	}
 }
 
@@ -111,10 +113,10 @@ func printContiniously(ctx context.Context, cl *client.Simple, debug bool) {
 		err := cl.Process(ctx, *categoryName, scratch, func(b []byte) error {
 			fmt.Printf("\n")
 			log.Printf("BATCH: %s", b)
-			fmt.Printf("> ")
+			fmt.Printf("(invitation from Process)> ")
 			return nil
 		})
-		
+
 		if err != nil {
 			log.Printf("Error processing batch: %v", err)
 			time.Sleep(time.Second)
