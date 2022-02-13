@@ -27,6 +27,11 @@ const batchSize = 4 * 1024 * 1024 // 4 MiB
 var errNotFound = errors.New("chunk not found")
 var errIncomplete = errors.New("chunk is not complete")
 
+type categoryAndReplica struct {
+	category string
+	replica  string
+}
+
 // Client describes the client-side state of replication and continiously downloads
 // new chunks from other servers.
 type Client struct {
@@ -37,9 +42,9 @@ type Client struct {
 	httpCl       *http.Client
 	r            *client.Raw
 
-	// mu protects perCategory
-	mu          sync.Mutex
-	perCategory map[string]*CategoryDownloader
+	// mu protects perCategoryPerReplica
+	mu                    sync.Mutex
+	perCategoryPerReplica map[categoryAndReplica]*CategoryDownloader
 }
 
 type CategoryDownloader struct {
@@ -76,13 +81,13 @@ func NewClient(logger *log.Logger, st *State, wr DirectWriter, instanceName stri
 	raw.Logger = logger
 
 	return &Client{
-		logger:       logger,
-		state:        st,
-		wr:           wr,
-		instanceName: instanceName,
-		httpCl:       httpCl,
-		r:            raw,
-		perCategory:  make(map[string]*CategoryDownloader),
+		logger:                logger,
+		state:                 st,
+		wr:                    wr,
+		instanceName:          instanceName,
+		httpCl:                httpCl,
+		r:                     raw,
+		perCategoryPerReplica: make(map[categoryAndReplica]*CategoryDownloader),
 	}
 }
 
@@ -118,7 +123,10 @@ func (c *Client) acknowledgeLoop(ctx context.Context) {
 //    because the chunk already does not exist at the source (because it was acknowledged).
 func (c *Client) ensureChunkIsNotBeingDownloaded(ch Chunk) {
 	c.mu.Lock()
-	downloader, ok := c.perCategory[ch.Category]
+	downloader, ok := c.perCategoryPerReplica[categoryAndReplica{
+		category: ch.Category,
+		replica:  ch.Owner,
+	}]
 	c.mu.Unlock()
 
 	if !ok {
@@ -144,7 +152,12 @@ func (c *Client) ensureChunkIsNotBeingDownloaded(ch Chunk) {
 
 func (c *Client) replicationLoop(ctx context.Context) {
 	for ch := range c.state.WatchReplicationQueue(ctx, c.instanceName) {
-		downloader, ok := c.perCategory[ch.Category]
+		key := categoryAndReplica{
+			category: ch.Category,
+			replica:  ch.Owner,
+		}
+
+		downloader, ok := c.perCategoryPerReplica[key]
 		if !ok {
 			downloader = &CategoryDownloader{
 				logger:       c.logger,
@@ -158,7 +171,7 @@ func (c *Client) replicationLoop(ctx context.Context) {
 			go downloader.Loop(ctx)
 
 			c.mu.Lock()
-			c.perCategory[ch.Category] = downloader
+			c.perCategoryPerReplica[key] = downloader
 			c.mu.Unlock()
 		}
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"os"
 	"os/signal"
 	"strings"
@@ -31,9 +32,12 @@ type readResult struct {
 func main() {
 	flag.Parse()
 
-	ctx := context.Background()
+	rand.Seed(time.Now().UnixNano())
+	ctx, cancel := context.WithCancel(context.Background())
 
-	addrs := []string{"http://127.0.0.1:8080", "http://127.0.0.1:8081"}
+	log.SetFlags(log.Flags() | log.Lmicroseconds)
+
+	addrs := []string{"http://127.0.0.1:8080", "http://127.0.0.1:8081", "http://127.0.0.1:8082", "http://127.0.0.1:8083", "http://127.0.0.1:8084"}
 
 	cl := client.NewSimple(addrs)
 	if buf, err := ioutil.ReadFile(fmt.Sprintf(simpleStateFilePath, *categoryName)); err == nil {
@@ -53,6 +57,7 @@ func main() {
 	fmt.Printf("> ")
 
 	sigCh := make(chan os.Signal, 5)
+	sigChCopy := make(chan os.Signal, 5)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
 	readCh := make(chan readResult)
@@ -63,12 +68,18 @@ func main() {
 		}
 	}()
 
+	go func() {
+		s := <-sigCh
+		cancel()
+		sigChCopy <- s
+	}()
+
 	for {
 		var ln string
 		var err error
 
 		select {
-		case s := <-sigCh:
+		case s := <-sigChCopy:
 			log.Printf("Received signal %v", s)
 			ln = ""
 			err = io.EOF
@@ -88,12 +99,24 @@ func main() {
 			log.Fatalf("The line is incomplete: %q", ln)
 		}
 
-		if err := cl.Send(ctx, *categoryName, []byte(ln)); err != nil {
+		if err := send(ctx, cl, ln); err != nil {
 			log.Printf("Failed sending data to Chukcha: %v", err)
+			fmt.Printf("(send unsuccessful)> ")
+		} else {
+			fmt.Printf("(send successful)> ")
 		}
 
-		fmt.Printf("(send successful)> ")
 	}
+}
+
+func send(parentCtx context.Context, cl *client.Simple, ln string) error {
+	ctx, cancel := context.WithTimeout(parentCtx, time.Minute+5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	defer func() { log.Printf("Send() took %s", time.Since(start)) }()
+
+	return cl.Send(ctx, *categoryName, []byte(ln))
 }
 
 func saveState(cl *client.Simple) {
@@ -106,18 +129,31 @@ func saveState(cl *client.Simple) {
 	fmt.Println("")
 }
 
+func process(parentCtx context.Context, cl *client.Simple, scratch []byte, cb func(b []byte) error) error {
+	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err := cl.Process(ctx, *categoryName, scratch, cb)
+	if err == nil || (!strings.Contains(err.Error(), "context canceled") && !strings.Contains(err.Error(), "context deadline exceeded")) {
+		log.Printf("Process() took %s (error %v)", time.Since(start), err)
+	}
+
+	return err
+}
+
 func printContiniously(ctx context.Context, cl *client.Simple, debug bool) {
 	scratch := make([]byte, 1024*1024)
 
 	for {
-		err := cl.Process(ctx, *categoryName, scratch, func(b []byte) error {
+		err := process(ctx, cl, scratch, func(b []byte) error {
 			fmt.Printf("\n")
 			log.Printf("BATCH: %s", b)
 			fmt.Printf("(invitation from Process)> ")
 			return nil
 		})
 
-		if err != nil {
+		if err != nil && !strings.Contains(err.Error(), "context canceled") && !strings.Contains(err.Error(), "context deadline exceeded") {
 			log.Printf("Error processing batch: %v", err)
 			time.Sleep(time.Second)
 		}

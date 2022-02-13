@@ -222,7 +222,7 @@ func (s *Simple) processInstance(ctx context.Context, addr, instance, category s
 	}
 
 	if err := s.cl.Ack(ctx, addr, category, curCh.CurChunk.Name, curCh.Off); err != nil {
-		return fmt.Errorf("ack current chunk: %v", err)
+		return fmt.Errorf("ack current chunk: %w", err)
 	}
 
 	if s.debug {
@@ -249,7 +249,7 @@ func (s *Simple) getNextChunkForInstance(ctx context.Context, addr, instance, ca
 	lastAckedChunkIndexes[instance] = idx
 	chunksByInstance, err := s.getUnackedChunksGroupedByInstance(ctx, category, addr, lastAckedChunkIndexes)
 	if err != nil {
-		return protocol.Chunk{}, fmt.Errorf("getting chunks list before ack: %v", err)
+		return protocol.Chunk{}, fmt.Errorf("getting chunks list before ack: %w", err)
 	}
 	if len(chunksByInstance[instance]) == 0 {
 		return protocol.Chunk{}, fmt.Errorf("getting new chunks list before ack: unexpected error for instance %q: %w", instance, errNoNewChunks)
@@ -261,7 +261,7 @@ func (s *Simple) getNextChunkForInstance(ctx context.Context, addr, instance, ca
 func (s *Simple) getUnackedChunksGroupedByInstance(ctx context.Context, category, addr string, lastAckedChunkIndexes map[string]int) (map[string][]protocol.Chunk, error) {
 	chunks, err := s.cl.ListChunks(ctx, addr, category, false)
 	if err != nil {
-		return nil, fmt.Errorf("listChunks failed: %v", err)
+		return nil, fmt.Errorf("listChunks failed: %w", err)
 	}
 
 	if len(chunks) == 0 {
