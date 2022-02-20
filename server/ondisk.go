@@ -41,8 +41,10 @@ type OnDisk struct {
 	repl StorageHooks
 
 	// downloadNoficationMu protects downloadNotifications
-	downloadNoficationMu  sync.Mutex
-	downloadNotifications map[string]*downloadNotification
+	downloadNoficationMu        sync.RWMutex
+	downloadNotificationChanIdx int
+	downloadNotificationChans   map[int]chan bool
+	downloadNotifications       map[string]*downloadNotification
 
 	// writeMu protects lastChunk* entries
 	writeMu                     sync.Mutex
@@ -56,13 +58,14 @@ type OnDisk struct {
 // NewOnDisk creates a server that stores all it's data on disk.
 func NewOnDisk(logger *log.Logger, dirname, category, instanceName string, maxChunkSize uint64, rotateChunkInterval time.Duration, repl StorageHooks) (*OnDisk, error) {
 	s := &OnDisk{
-		logger:                logger,
-		dirname:               dirname,
-		category:              category,
-		instanceName:          instanceName,
-		repl:                  repl,
-		maxChunkSize:          maxChunkSize,
-		downloadNotifications: make(map[string]*downloadNotification),
+		logger:                    logger,
+		dirname:                   dirname,
+		category:                  category,
+		instanceName:              instanceName,
+		repl:                      repl,
+		maxChunkSize:              maxChunkSize,
+		downloadNotifications:     make(map[string]*downloadNotification),
+		downloadNotificationChans: make(map[int]chan bool),
 	}
 
 	if err := s.initLastChunkIdx(dirname); err != nil {
@@ -222,34 +225,6 @@ func (s *OnDisk) Write(ctx context.Context, msgs []byte) (chunkName string, off 
 	return s.lastChunk, int64(s.lastChunkSize), nil
 }
 
-// Wait waits until the minSyncReplicas report back that they successfully downloaded
-// the respective chunk from us.
-func (s *OnDisk) Wait(ctx context.Context, chunkName string, off uint64, minSyncReplicas uint) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		var replicatedCount uint
-
-		s.downloadNoficationMu.Lock()
-		for _, n := range s.downloadNotifications {
-			if (n.chunk > chunkName) || (n.chunk == chunkName && n.size >= off) {
-				replicatedCount++
-			}
-		}
-		s.downloadNoficationMu.Unlock()
-
-		if replicatedCount >= minSyncReplicas {
-			return nil
-		}
-
-		time.Sleep(time.Millisecond * 100)
-	}
-}
-
 // Read copies the data from the in-memory store and writes
 // the data read to the provided Writer, starting with the
 // offset provided.
@@ -369,7 +344,55 @@ func (s *OnDisk) ReplicationAck(ctx context.Context, chunk, instance string, siz
 		chunk: chunk,
 		size:  size,
 	}
+
+	for _, ch := range s.downloadNotificationChans {
+		select {
+		case ch <- true:
+		default:
+		}
+	}
+
 	return nil
+}
+
+// Wait waits until the minSyncReplicas report back that they successfully downloaded
+// the respective chunk from us.
+func (s *OnDisk) Wait(ctx context.Context, chunkName string, off uint64, minSyncReplicas uint) error {
+	notifCh := make(chan bool, 2)
+
+	s.downloadNoficationMu.Lock()
+	s.downloadNotificationChanIdx++
+	notifChIdx := s.downloadNotificationChanIdx
+	s.downloadNotificationChans[notifChIdx] = notifCh
+	s.downloadNoficationMu.Unlock()
+
+	defer func() {
+		s.downloadNoficationMu.Lock()
+		delete(s.downloadNotificationChans, notifChIdx)
+		s.downloadNoficationMu.Unlock()
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-notifCh:
+		}
+
+		var replicatedCount uint
+
+		s.downloadNoficationMu.RLock()
+		for _, n := range s.downloadNotifications {
+			if (n.chunk > chunkName) || (n.chunk == chunkName && n.size >= off) {
+				replicatedCount++
+			}
+		}
+		s.downloadNoficationMu.RUnlock()
+
+		if replicatedCount >= minSyncReplicas {
+			return nil
+		}
+	}
 }
 
 // ListChunks returns the list of current chunks.

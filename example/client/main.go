@@ -21,6 +21,7 @@ import (
 var categoryName = flag.String("category", "stdin", "The category being tested")
 var debug = flag.Bool("debug", false, "Debug mode")
 var minSyncReplicas = flag.Uint("min-sync-replicas", 0, "How many replicas to wait when writing a message")
+var addrsFlag = flag.String("addrs", "http://127.0.0.1:8080,http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083,http://127.0.0.1:8084", "List of Chukcha servers")
 
 const simpleStateFilePath = "/tmp/simple-example-state-%s.json"
 
@@ -37,7 +38,7 @@ func main() {
 
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
 
-	addrs := []string{"http://127.0.0.1:8080", "http://127.0.0.1:8081", "http://127.0.0.1:8082", "http://127.0.0.1:8083", "http://127.0.0.1:8084"}
+	addrs := strings.Split(*addrsFlag, ",")
 
 	cl := client.NewSimple(addrs)
 	if buf, err := ioutil.ReadFile(fmt.Sprintf(simpleStateFilePath, *categoryName)); err == nil {
