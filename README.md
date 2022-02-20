@@ -15,7 +15,7 @@ The youtube playlist to see live development: https://www.youtube.com/watch?v=t3
 
 # Requirements
 
-Go 1.16+ is needed to build Chukcha.
+Go 1.18+ is needed to build Chukcha.
 
 # Features (work in progress)
 

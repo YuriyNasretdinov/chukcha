@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/YuriyNasretdinov/chukcha/generics/heap"
 	"github.com/YuriyNasretdinov/chukcha/protocol"
 )
 
@@ -30,6 +31,20 @@ type downloadNotification struct {
 	size  uint64
 }
 
+type replicationSub struct {
+	chunk string
+	size  uint64
+	ch    chan bool
+}
+
+func (r replicationSub) Less(v replicationSub) bool {
+	if r.chunk == v.chunk {
+		return r.size < v.size
+	}
+
+	return r.chunk < v.chunk
+}
+
 // OnDisk stores all the data on disk.
 type OnDisk struct {
 	logger       *log.Logger
@@ -41,10 +56,9 @@ type OnDisk struct {
 	repl StorageHooks
 
 	// downloadNoficationMu protects downloadNotifications
-	downloadNoficationMu        sync.RWMutex
-	downloadNotificationChanIdx int
-	downloadNotificationChans   map[int]chan bool
-	downloadNotifications       map[string]*downloadNotification
+	downloadNoficationMu     sync.RWMutex
+	downloadNotificationSubs heap.Min[replicationSub]
+	downloadNotifications    map[string]*downloadNotification
 
 	// writeMu protects lastChunk* entries
 	writeMu                     sync.Mutex
@@ -58,14 +72,14 @@ type OnDisk struct {
 // NewOnDisk creates a server that stores all it's data on disk.
 func NewOnDisk(logger *log.Logger, dirname, category, instanceName string, maxChunkSize uint64, rotateChunkInterval time.Duration, repl StorageHooks) (*OnDisk, error) {
 	s := &OnDisk{
-		logger:                    logger,
-		dirname:                   dirname,
-		category:                  category,
-		instanceName:              instanceName,
-		repl:                      repl,
-		maxChunkSize:              maxChunkSize,
-		downloadNotifications:     make(map[string]*downloadNotification),
-		downloadNotificationChans: make(map[int]chan bool),
+		logger:                   logger,
+		dirname:                  dirname,
+		category:                 category,
+		instanceName:             instanceName,
+		repl:                     repl,
+		maxChunkSize:             maxChunkSize,
+		downloadNotifications:    make(map[string]*downloadNotification),
+		downloadNotificationSubs: heap.NewMin[replicationSub](),
 	}
 
 	if err := s.initLastChunkIdx(dirname); err != nil {
@@ -345,10 +359,17 @@ func (s *OnDisk) ReplicationAck(ctx context.Context, chunk, instance string, siz
 		size:  size,
 	}
 
-	for _, ch := range s.downloadNotificationChans {
-		select {
-		case ch <- true:
-		default:
+	for s.downloadNotificationSubs.Len() > 0 {
+		r := s.downloadNotificationSubs.Pop()
+
+		if (chunk == r.chunk && size >= r.size) || chunk > r.chunk {
+			select {
+			case r.ch <- true:
+			default:
+			}
+		} else {
+			s.downloadNotificationSubs.Push(r)
+			break
 		}
 	}
 
@@ -358,25 +379,21 @@ func (s *OnDisk) ReplicationAck(ctx context.Context, chunk, instance string, siz
 // Wait waits until the minSyncReplicas report back that they successfully downloaded
 // the respective chunk from us.
 func (s *OnDisk) Wait(ctx context.Context, chunkName string, off uint64, minSyncReplicas uint) error {
-	notifCh := make(chan bool, 2)
+	r := replicationSub{
+		chunk: chunkName,
+		size:  off,
+		ch:    make(chan bool, 2),
+	}
 
 	s.downloadNoficationMu.Lock()
-	s.downloadNotificationChanIdx++
-	notifChIdx := s.downloadNotificationChanIdx
-	s.downloadNotificationChans[notifChIdx] = notifCh
+	s.downloadNotificationSubs.Push(r)
 	s.downloadNoficationMu.Unlock()
-
-	defer func() {
-		s.downloadNoficationMu.Lock()
-		delete(s.downloadNotificationChans, notifChIdx)
-		s.downloadNoficationMu.Unlock()
-	}()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-notifCh:
+		case <-r.ch:
 		}
 
 		var replicatedCount uint
