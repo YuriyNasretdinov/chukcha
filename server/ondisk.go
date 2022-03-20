@@ -56,9 +56,11 @@ type OnDisk struct {
 	repl StorageHooks
 
 	// downloadNoficationMu protects downloadNotifications
-	downloadNoficationMu     sync.RWMutex
-	downloadNotificationSubs heap.Min[replicationSub]
-	downloadNotifications    map[string]*downloadNotification
+	downloadNoficationMu        sync.RWMutex
+	downloadNotificationChanIdx int
+	downloadNotificationChans   map[int]chan bool
+	downloadNotificationSubs    heap.Min[replicationSub]
+	downloadNotifications       map[string]*downloadNotification
 
 	// writeMu protects lastChunk* entries
 	writeMu                     sync.Mutex
@@ -72,14 +74,15 @@ type OnDisk struct {
 // NewOnDisk creates a server that stores all it's data on disk.
 func NewOnDisk(logger *log.Logger, dirname, category, instanceName string, maxChunkSize uint64, rotateChunkInterval time.Duration, repl StorageHooks) (*OnDisk, error) {
 	s := &OnDisk{
-		logger:                   logger,
-		dirname:                  dirname,
-		category:                 category,
-		instanceName:             instanceName,
-		repl:                     repl,
-		maxChunkSize:             maxChunkSize,
-		downloadNotifications:    make(map[string]*downloadNotification),
-		downloadNotificationSubs: heap.NewMin[replicationSub](),
+		logger:                    logger,
+		dirname:                   dirname,
+		category:                  category,
+		instanceName:              instanceName,
+		repl:                      repl,
+		maxChunkSize:              maxChunkSize,
+		downloadNotifications:     make(map[string]*downloadNotification),
+		downloadNotificationChans: make(map[int]chan bool),
+		downloadNotificationSubs:  heap.NewMin[replicationSub](),
 	}
 
 	if err := s.initLastChunkIdx(dirname); err != nil {
@@ -219,6 +222,7 @@ func (s *OnDisk) Write(ctx context.Context, msgs []byte) (chunkName string, off 
 		if err := s.repl.AfterCreatingChunk(ctx, s.category, s.lastChunk); err != nil {
 			return "", 0, fmt.Errorf("after creating new chunk: %w", err)
 		}
+		s.lastChunkAddedToReplication = true
 	}
 
 	fp, err := s.getLastChunkFp()
@@ -227,15 +231,13 @@ func (s *OnDisk) Write(ctx context.Context, msgs []byte) (chunkName string, off 
 	}
 
 	n, err := fp.Write(msgs)
-	if err != nil {
-		if truncateErr := fp.Truncate(int64(s.lastChunkSize)); truncateErr != nil {
-			s.logger.Printf("Failed to truncate %s: %v", fp.Name(), err)
-		}
+	s.lastChunkSize += uint64(n)
 
+	if err != nil {
+		// TODO: handle write errors better
 		return "", 0, err
 	}
 
-	s.lastChunkSize += uint64(n)
 	return s.lastChunk, int64(s.lastChunkSize), nil
 }
 
@@ -243,6 +245,7 @@ func (s *OnDisk) Write(ctx context.Context, msgs []byte) (chunkName string, off 
 // the data read to the provided Writer, starting with the
 // offset provided.
 func (s *OnDisk) Read(chunk string, off uint64, maxSize uint64, w io.Writer) error {
+	// TODO: clean chunk name properly (e.g. filepath.Clean(`../chunk-00000`) == `../chunk-00000` ).
 	chunk = filepath.Clean(chunk)
 	_, err := os.Stat(filepath.Join(s.dirname, chunk))
 	if err != nil {
@@ -295,6 +298,7 @@ func (s *OnDisk) Ack(ctx context.Context, chunk string, size uint64) error {
 		return fmt.Errorf("could not delete incomplete chunk %q", chunk)
 	}
 
+	// TODO: clean chunk name properly (e.g. filepath.Clean(`../chunk-00000`) == `../chunk-00000` ).
 	chunkFilename := filepath.Join(s.dirname, chunk)
 
 	fi, err := os.Stat(chunkFilename)
@@ -319,6 +323,7 @@ func (s *OnDisk) Ack(ctx context.Context, chunk string, size uint64) error {
 }
 
 func (s *OnDisk) doAckChunk(chunk string) error {
+	// TODO: clean chunk name properly (e.g. filepath.Clean(`../chunk-00000`) == `../chunk-00000` ).
 	chunkFilename := filepath.Join(s.dirname, chunk)
 
 	fp, err := os.OpenFile(chunkFilename, os.O_WRONLY, 0666)
@@ -359,6 +364,13 @@ func (s *OnDisk) ReplicationAck(ctx context.Context, chunk, instance string, siz
 		size:  size,
 	}
 
+	for _, ch := range s.downloadNotificationChans {
+		select {
+		case ch <- true:
+		default:
+		}
+	}
+
 	for s.downloadNotificationSubs.Len() > 0 {
 		r := s.downloadNotificationSubs.Pop()
 
@@ -379,21 +391,41 @@ func (s *OnDisk) ReplicationAck(ctx context.Context, chunk, instance string, siz
 // Wait waits until the minSyncReplicas report back that they successfully downloaded
 // the respective chunk from us.
 func (s *OnDisk) Wait(ctx context.Context, chunkName string, off uint64, minSyncReplicas uint) error {
-	r := replicationSub{
-		chunk: chunkName,
-		size:  off,
-		ch:    make(chan bool, 2),
-	}
+	var ch chan bool
 
-	s.downloadNoficationMu.Lock()
-	s.downloadNotificationSubs.Push(r)
-	s.downloadNoficationMu.Unlock()
+	if minSyncReplicas == 1 {
+		r := replicationSub{
+			chunk: chunkName,
+			size:  off,
+			ch:    make(chan bool, 2),
+		}
+
+		s.downloadNoficationMu.Lock()
+		s.downloadNotificationSubs.Push(r)
+		s.downloadNoficationMu.Unlock()
+
+		ch = r.ch
+	} else {
+		ch = make(chan bool, 2)
+
+		s.downloadNoficationMu.Lock()
+		s.downloadNotificationChanIdx++
+		notifChIdx := s.downloadNotificationChanIdx
+		s.downloadNotificationChans[notifChIdx] = ch
+		s.downloadNoficationMu.Unlock()
+
+		defer func() {
+			s.downloadNoficationMu.Lock()
+			delete(s.downloadNotificationChans, notifChIdx)
+			s.downloadNoficationMu.Unlock()
+		}()
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-r.ch:
+		case <-ch:
 		}
 
 		var replicatedCount uint
