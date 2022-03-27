@@ -61,16 +61,16 @@ func InitAndServe(a InitArgs) error {
 	fp.Close()
 	os.Remove(fp.Name())
 
-	replStorage := replication.NewStorage(logger, replState, a.InstanceName)
 	creator := &OnDiskCreator{
 		logger:              logger,
 		dirName:             a.DirName,
 		instanceName:        a.InstanceName,
-		replStorage:         replStorage,
 		storages:            make(map[string]*server.OnDisk),
 		maxChunkSize:        a.MaxChunkSize,
 		rotateChunkInterval: a.RotateChunkInterval,
 	}
+	replStorage := replication.NewStorage(logger, creator, replState, a.InstanceName)
+	creator.replStorage = replStorage
 
 	s := web.NewServer(logger, replState, a.InstanceName, a.DirName, a.ListenAddr, replStorage, creator.Get)
 
@@ -122,6 +122,25 @@ func (c *OnDiskCreator) WriteDirect(category string, fileName string, contents [
 	}
 
 	return inst.WriteDirect(fileName, contents)
+}
+
+func (c *OnDiskCreator) SetReplicationDisabled(category string, v bool) error {
+	inst, err := c.Get(category)
+	if err != nil {
+		return err
+	}
+
+	inst.SetReplicationDisabled(v)
+	return nil
+}
+
+func (c *OnDiskCreator) Write(ctx context.Context, category string, msgs []byte) (chunkName string, off int64, err error) {
+	inst, err := c.Get(category)
+	if err != nil {
+		return "", 0, err
+	}
+
+	return inst.Write(ctx, msgs)
 }
 
 func (c *OnDiskCreator) AckDirect(ctx context.Context, category string, chunk string) error {

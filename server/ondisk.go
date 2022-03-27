@@ -53,6 +53,8 @@ type OnDisk struct {
 	instanceName string
 	maxChunkSize uint64
 
+	replicationDisabled bool
+
 	repl StorageHooks
 
 	// downloadNoficationMu protects downloadNotifications
@@ -182,8 +184,10 @@ func (s *OnDisk) createNextChunk(ctx context.Context) error {
 	s.lastChunkIdx++
 	s.lastChunkAddedToReplication = false
 
-	if err := s.repl.AfterCreatingChunk(ctx, s.category, s.lastChunk); err != nil {
-		return fmt.Errorf("after creating new chunk: %w", err)
+	if !s.replicationDisabled {
+		if err := s.repl.AfterCreatingChunk(ctx, s.category, s.lastChunk); err != nil {
+			return fmt.Errorf("after creating new chunk: %w", err)
+		}
 	}
 
 	s.lastChunkAddedToReplication = true
@@ -205,6 +209,13 @@ func (s *OnDisk) getLastChunkFp() (*os.File, error) {
 	return fp, nil
 }
 
+func (s *OnDisk) SetReplicationDisabled(v bool) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	s.replicationDisabled = v
+}
+
 // Write accepts the messages from the clients and stores them.
 func (s *OnDisk) Write(ctx context.Context, msgs []byte) (chunkName string, off int64, err error) {
 	s.writeMu.Lock()
@@ -218,7 +229,7 @@ func (s *OnDisk) Write(ctx context.Context, msgs []byte) (chunkName string, off 
 		}
 	}
 
-	if !s.lastChunkAddedToReplication {
+	if !s.lastChunkAddedToReplication && !s.replicationDisabled {
 		if err := s.repl.AfterCreatingChunk(ctx, s.category, s.lastChunk); err != nil {
 			return "", 0, fmt.Errorf("after creating new chunk: %w", err)
 		}

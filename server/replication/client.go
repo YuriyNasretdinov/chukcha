@@ -3,6 +3,7 @@ package replication
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -42,9 +43,10 @@ type Client struct {
 	httpCl       *http.Client
 	r            *client.Raw
 
-	// mu protects perCategoryPerReplica
+	// mu protects everything below
 	mu                    sync.Mutex
 	perCategoryPerReplica map[categoryAndReplica]*CategoryDownloader
+	peersAlreadyStarted   map[string]bool
 }
 
 type CategoryDownloader struct {
@@ -69,6 +71,9 @@ type DirectWriter interface {
 	Stat(category string, fileName string) (size int64, exists bool, deleted bool, err error)
 	WriteDirect(category string, fileName string, contents []byte) error
 	AckDirect(ctx context.Context, category string, chunk string) error
+
+	SetReplicationDisabled(category string, v bool) error
+	Write(ctx context.Context, category string, msgs []byte) (chunkName string, off int64, err error)
 }
 
 // NewClient initialises the replication client.
@@ -88,6 +93,7 @@ func NewClient(logger *log.Logger, st *State, wr DirectWriter, instanceName stri
 		httpCl:                httpCl,
 		r:                     raw,
 		perCategoryPerReplica: make(map[categoryAndReplica]*CategoryDownloader),
+		peersAlreadyStarted:   make(map[string]bool),
 	}
 }
 
@@ -151,31 +157,102 @@ func (c *Client) ensureChunkIsNotBeingDownloaded(ch Chunk) {
 }
 
 func (c *Client) replicationLoop(ctx context.Context) {
-	for ch := range c.state.WatchReplicationQueue(ctx, c.instanceName) {
-		key := categoryAndReplica{
-			category: ch.Category,
-			replica:  ch.Owner,
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
 		}
 
-		downloader, ok := c.perCategoryPerReplica[key]
-		if !ok {
-			downloader = &CategoryDownloader{
-				logger:       c.logger,
-				eventsCh:     make(chan Chunk, 3),
-				state:        c.state,
-				wr:           c.wr,
-				instanceName: c.instanceName,
-				httpCl:       c.httpCl,
-				r:            c.r,
+		peers, err := c.state.ListPeers(ctx)
+		if err != nil {
+			c.logger.Printf("Could not list peers: %v", err)
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		c.startPerPeerReplicationLoops(ctx, peers)
+	}
+}
+
+func (c *Client) onNewChunkInReplicationQueue(ctx context.Context, ch Chunk) {
+	key := categoryAndReplica{
+		category: ch.Category,
+		replica:  ch.Owner,
+	}
+
+	downloader, ok := c.perCategoryPerReplica[key]
+	if !ok {
+		downloader = &CategoryDownloader{
+			logger:       c.logger,
+			eventsCh:     make(chan Chunk, 3),
+			state:        c.state,
+			wr:           c.wr,
+			instanceName: c.instanceName,
+			httpCl:       c.httpCl,
+			r:            c.r,
+		}
+		go downloader.Loop(ctx)
+
+		c.mu.Lock()
+		c.perCategoryPerReplica[key] = downloader
+		c.mu.Unlock()
+	}
+
+	downloader.eventsCh <- ch
+}
+
+func (c *Client) startPerPeerReplicationLoops(ctx context.Context, peers []Peer) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, peer := range peers {
+		if peer.InstanceName == c.instanceName {
+			continue
+		} else if c.peersAlreadyStarted[peer.InstanceName] {
+			continue
+		}
+
+		c.peersAlreadyStarted[peer.InstanceName] = true
+		go c.downloadFromPeerLoop(ctx, peer)
+	}
+}
+
+func (c *Client) downloadFromPeerLoop(ctx context.Context, p Peer) {
+	// TODO: handle change of address for peer
+	cl := client.NewSimple([]string{"http://" + p.ListenAddr})
+	cl.SetAcknowledge(false)
+
+	scratch := make([]byte, 256*1024)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		err := cl.Process(ctx, systemReplication, scratch, func(b []byte) error {
+			d := json.NewDecoder(bytes.NewReader(b))
+
+			for {
+				var ch Chunk
+				err := d.Decode(&ch)
+				if errors.Is(err, io.EOF) {
+					return nil
+				} else if err != nil {
+					c.logger.Printf("Failed to decode chunk from system replication category: %v", err)
+					continue
+				}
+
+				c.onNewChunkInReplicationQueue(ctx, ch)
 			}
-			go downloader.Loop(ctx)
+		})
 
-			c.mu.Lock()
-			c.perCategoryPerReplica[key] = downloader
-			c.mu.Unlock()
+		if err != nil {
+			log.Printf("Failed to get events from category %q: %v", systemReplication, err)
+			time.Sleep(10 * time.Second)
 		}
-
-		downloader.eventsCh <- ch
 	}
 }
 
@@ -186,11 +263,6 @@ func (c *CategoryDownloader) Loop(ctx context.Context) {
 			return
 		case ch := <-c.eventsCh:
 			c.downloadAllChunksUpTo(ctx, ch)
-
-			// TODO: handle errors
-			if err := c.state.DeleteChunkFromReplicationQueue(ctx, c.instanceName, ch); err != nil {
-				c.logger.Printf("Could not delete chunk %+v from the replication queue: %v", ch, err)
-			}
 		}
 	}
 }
@@ -335,7 +407,7 @@ func (c *CategoryDownloader) downloadChunkIteration(ctx context.Context, ch Chun
 
 	info, err := c.getChunkInfo(ctx, addr, ch)
 	if err == errNotFound {
-		c.logger.Printf("chunk not found at %q", addr)
+		c.logger.Printf("chunk %+v not found at %q", ch, addr)
 		return nil
 	} else if err != nil {
 		return err

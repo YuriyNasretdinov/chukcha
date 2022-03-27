@@ -22,6 +22,7 @@ type Simple struct {
 	Logger *log.Logger
 
 	pollInterval time.Duration
+	acknowledge  bool
 	debug        bool
 	addrs        []string
 	cl           *Raw
@@ -44,6 +45,7 @@ func NewSimple(addrs []string) *Simple {
 	return &Simple{
 		addrs:        addrs,
 		pollInterval: time.Millisecond * 100,
+		acknowledge:  true,
 		cl:           NewRaw(&http.Client{}),
 		st:           &state{Offsets: make(map[string]*ReadOffset)},
 	}
@@ -60,6 +62,11 @@ func (s *Simple) SetPollInterval(d time.Duration) {
 func (s *Simple) SetDebug(v bool) {
 	s.debug = v
 	s.cl.SetDebug(v)
+}
+
+// SetAcknowledge controls whether or not the client will acknowledge chunks.
+func (s *Simple) SetAcknowledge(v bool) {
+	s.acknowledge = v
 }
 
 // SetMinSyncReplicas sets the value of minSyncReplicas when sending the requests to
@@ -221,8 +228,10 @@ func (s *Simple) processInstance(ctx context.Context, addr, instance, category s
 		return err
 	}
 
-	if err := s.cl.Ack(ctx, addr, category, curCh.CurChunk.Name, curCh.Off); err != nil {
-		return fmt.Errorf("ack current chunk: %w", err)
+	if s.acknowledge {
+		if err := s.cl.Ack(ctx, addr, category, curCh.CurChunk.Name, curCh.Off); err != nil {
+			return fmt.Errorf("ack current chunk: %w", err)
+		}
 	}
 
 	if s.debug {

@@ -114,20 +114,9 @@ type Chunk struct {
 	FileName string
 }
 
-func (c *State) AddChunkToReplicationQueue(ctx context.Context, targetInstance string, ch Chunk) error {
-	key := "replication/" + targetInstance + "/" + ch.Category + "/" + ch.FileName
-	return c.put(ctx, key, ch.Owner)
-}
-
 func (c *State) AddChunkToAcknowledgeQueue(ctx context.Context, targetInstance string, ch Chunk) error {
 	key := "acknowledge/" + targetInstance + "/" + ch.Category + "/" + ch.FileName
 	return c.put(ctx, key, ch.Owner)
-}
-
-func (c *State) DeleteChunkFromReplicationQueue(ctx context.Context, targetInstance string, ch Chunk) error {
-	key := "replication/" + targetInstance + "/" + ch.Category + "/" + ch.FileName
-	_, err := c.cl.Delete(ctx, c.prefix+key)
-	return err
 }
 
 func (c *State) DeleteChunkFromAcknowledgeQueue(ctx context.Context, targetInstance string, ch Chunk) error {
@@ -147,12 +136,6 @@ func (c *State) parseReplicationKey(prefix string, kv *mvccpb.KeyValue) (Chunk, 
 		Category: parts[0],
 		FileName: parts[1],
 	}, nil
-}
-
-// WatchReplicationQueue starts watching the replication queue and returns
-// all the existing chunks too.
-func (c *State) WatchReplicationQueue(ctx context.Context, instanceName string) chan Chunk {
-	return c.watchQueue(ctx, "replication", instanceName)
 }
 
 // WatchAcknowledgeQueue starts watching the ack queue and returns
