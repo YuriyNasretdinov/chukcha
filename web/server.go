@@ -24,7 +24,6 @@ type Server struct {
 	dirname      string
 	listenAddr   string
 
-	replClient  *replication.State
 	replStorage *replication.Storage
 
 	getOnDisk GetOnDiskFn
@@ -33,13 +32,12 @@ type Server struct {
 type GetOnDiskFn func(category string) (*server.OnDisk, error)
 
 // NewServer creates *Server
-func NewServer(logger *log.Logger, replClient *replication.State, instanceName string, dirname string, listenAddr string, replStorage *replication.Storage, getOnDisk GetOnDiskFn) *Server {
+func NewServer(logger *log.Logger, instanceName string, dirname string, listenAddr string, replStorage *replication.Storage, getOnDisk GetOnDiskFn) *Server {
 	return &Server{
 		logger:       logger,
 		instanceName: instanceName,
 		dirname:      dirname,
 		listenAddr:   listenAddr,
-		replClient:   replClient,
 		replStorage:  replStorage,
 		getOnDisk:    getOnDisk,
 	}

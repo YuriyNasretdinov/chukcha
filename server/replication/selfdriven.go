@@ -1,6 +1,5 @@
 package replication
 
-/*
 type Peer struct {
 	InstanceName string
 	ListenAddr   string
@@ -11,4 +10,3 @@ type Chunk struct {
 	Category string
 	FileName string
 }
-*/

@@ -19,7 +19,8 @@ scp ~/go/bin/chukcha z:
 scp ~/go/bin/chukcha g:
 scp ~/go/bin/linux_arm/chukcha a:
 
-COMMON_PARAMS="-cluster AllComrads -rotate-chunk-interval=10s"
+PEERS="Moscow=127.0.0.1:8080,Voronezh=127.0.0.1:8081,Peking=127.0.0.1:8082,Bengaluru=127.0.0.1:8083,Phaenus=127.0.0.1:8084"
+COMMON_PARAMS="-cluster AllComrads -rotate-chunk-interval=10s -peers=$PEERS"
 
 # ALL NODES ARE EQUAL
 chukcha $COMMON_PARAMS -dirname ~/chukcha-data/moscow -instance Moscow -listen 127.0.0.1:8080 &
