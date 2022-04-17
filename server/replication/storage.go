@@ -7,8 +7,9 @@ import (
 	"log"
 )
 
-const systemReplication = "_system-replication"
-const systemAck = "_system-ack"
+const systemCategoryPrefix = "_system-"
+const systemReplication = systemCategoryPrefix + "replication"
+const systemAck = systemCategoryPrefix + "ack"
 
 // Storage provides hooks for the ondisk storage that will be called to
 // ensure that chunks are replicated.

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"path/filepath"
 	"sync"
@@ -29,6 +31,8 @@ type InitArgs struct {
 	MaxChunkSize        uint64
 	RotateChunkInterval time.Duration
 
+	PProfAddr string
+
 	// The next set of parameters is only set in tests.
 	DisableAcknowledge bool
 }
@@ -45,6 +49,13 @@ func InitAndServe(a InitArgs) error {
 	}
 	fp.Close()
 	os.Remove(fp.Name())
+
+	if a.PProfAddr != "" {
+		go func() {
+			logger.Printf("Starting pprof server on %q", a.PProfAddr)
+			logger.Println(http.ListenAndServe(a.PProfAddr, nil))
+		}()
+	}
 
 	creator := &OnDiskCreator{
 		logger:              logger,

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -106,10 +107,10 @@ func NewClient(logger *log.Logger, dirname string, wr DirectWriter, peers []Peer
 
 func (c *Client) Loop(ctx context.Context, disableAcknowledge bool) {
 	if !disableAcknowledge {
-		go c.replicationLoop(ctx, systemAck, c.ackPeersAlreadyStarted, c.onNewChunkInAckQueue)
+		go c.startPerPeerLoops(ctx, systemAck, c.peers, c.ackPeersAlreadyStarted, c.onNewChunkInAckQueue)
 	}
 
-	c.replicationLoop(ctx, systemReplication, c.peersAlreadyStarted, c.onNewChunkInReplicationQueue)
+	c.startPerPeerLoops(ctx, systemReplication, c.peers, c.peersAlreadyStarted, c.onNewChunkInReplicationQueue)
 }
 
 // We only care about the situation when the chunk is being downloaded
@@ -145,18 +146,6 @@ func (c *Client) ensureChunkIsNotBeingDownloaded(ch Chunk) {
 
 	// write to doneCh is guaranteed after chunk finished downloading
 	<-doneCh
-}
-
-func (c *Client) replicationLoop(ctx context.Context, category string, alreadyStarted map[string]bool, onChunk func(context.Context, Chunk)) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		c.startPerPeerLoops(ctx, category, c.peers, alreadyStarted, onChunk)
-	}
 }
 
 func (c *Client) onNewChunkInAckQueue(ctx context.Context, ch Chunk) {
@@ -214,7 +203,12 @@ func (c *Client) startPerPeerLoops(ctx context.Context, category string, peers [
 }
 
 func (c *Client) perPeerLoop(ctx context.Context, category string, p Peer, onChunk func(context.Context, Chunk)) {
+	if category == systemReplication {
+		go c.downloadExistingCategories(ctx, p, onChunk)
+	}
+
 	// TODO: handle change of address for peer
+	// TODO: in the client, allow to start reading from the end.
 	cl := client.NewSimple([]string{"http://" + p.ListenAddr})
 	cl.SetAcknowledge(false)
 
@@ -249,28 +243,81 @@ func (c *Client) perPeerLoop(ctx context.Context, category string, p Peer, onChu
 				}
 
 				onChunk(ctx, ch)
-
-				stateContents, err := cl.MarshalState()
-				if err != nil {
-					c.logger.Printf("Could not marshal client state: %v", err)
-					continue
-				}
-
-				if err := ioutil.WriteFile(stateFilePath+".tmp", stateContents, 0666); err != nil {
-					c.logger.Printf("Could not write state file %q: %v", stateFilePath+".tmp", err)
-				}
-
-				if err := os.Rename(stateFilePath+".tmp", stateFilePath); err != nil {
-					c.logger.Printf("Could not rename state file %q: %v", stateFilePath, err)
-				}
 			}
 		})
 
 		if err != nil {
 			log.Printf("Failed to get events from category %q: %v", category, err)
 			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		stateContents, err := cl.MarshalState()
+		if err != nil {
+			c.logger.Printf("Could not marshal client state: %v", err)
+			continue
+		}
+
+		if err := ioutil.WriteFile(stateFilePath+".tmp", stateContents, 0666); err != nil {
+			c.logger.Printf("Could not write state file %q: %v", stateFilePath+".tmp", err)
+		}
+
+		if err := os.Rename(stateFilePath+".tmp", stateFilePath); err != nil {
+			c.logger.Printf("Could not rename state file %q: %v", stateFilePath, err)
 		}
 	}
+}
+
+func (c *Client) downloadExistingCategories(ctx context.Context, p Peer, onChunk func(context.Context, Chunk)) {
+	for {
+		err := c.tryDownloadExistingCategories(ctx, p, onChunk)
+		if err == nil {
+			return
+		}
+
+		c.logger.Printf("Failed to download existing categories from peer %+v: %v", p, err)
+		time.Sleep(retryTimeout)
+	}
+}
+
+func (c *Client) tryDownloadExistingCategories(ctx context.Context, p Peer, onChunk func(context.Context, Chunk)) error {
+	c.logger.Printf("Downloading all categories from peer %+v", p)
+
+	cl := client.NewRaw(http.DefaultClient)
+	cats, err := cl.ListCategories(ctx, "http://"+p.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("listing categories: %w", err)
+	}
+
+	for _, cat := range cats {
+		if strings.HasPrefix(cat, systemCategoryPrefix) {
+			continue
+		}
+
+		c.logger.Printf("Downloading list of chunks for category %q from peer %+v", cat, p)
+
+		chunks, err := cl.ListChunks(ctx, "http://"+p.ListenAddr, cat, true)
+		if err != nil {
+			return fmt.Errorf("listing chunks for category %q: %w", cat, err)
+		}
+
+		if len(chunks) == 0 {
+			continue
+		}
+
+		sort.Slice(chunks, func(i, j int) bool {
+			return chunks[i].Name < chunks[j].Name
+		})
+
+		latestCh := chunks[len(chunks)-1]
+		onChunk(ctx, Chunk{
+			Owner:    p.InstanceName,
+			Category: cat,
+			FileName: latestCh.Name,
+		})
+	}
+
+	return nil
 }
 
 func (c *CategoryDownloader) Loop(ctx context.Context) {

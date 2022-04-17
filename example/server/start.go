@@ -15,6 +15,7 @@ type Host struct {
 	HostName     string
 	InstanceName string
 	ListenAddr   string
+	PProfAddr    string
 	Arch         string
 	DirName      string
 }
@@ -24,6 +25,7 @@ var hosts = []Host{
 		HostName:     "localhost",
 		InstanceName: "Moscow",
 		ListenAddr:   "127.0.0.1:8080",
+		PProfAddr:    "127.0.0.1:18080",
 		Arch:         "amd64",
 		DirName:      os.ExpandEnv("$HOME/chukcha-data/moscow"),
 	},
@@ -31,6 +33,7 @@ var hosts = []Host{
 		HostName:     "localhost",
 		InstanceName: "Voronezh",
 		ListenAddr:   "127.0.0.1:8081",
+		PProfAddr:    "127.0.0.1:18081",
 		Arch:         "amd64",
 		DirName:      os.ExpandEnv("$HOME/chukcha-data/voronezh/"),
 	},
@@ -38,18 +41,21 @@ var hosts = []Host{
 		HostName:     "z",
 		InstanceName: "Peking",
 		ListenAddr:   "127.0.0.1:8082",
+		PProfAddr:    "127.0.0.1:18082",
 		Arch:         "amd64",
 	},
 	{
 		HostName:     "g",
 		InstanceName: "Bengaluru",
 		ListenAddr:   "127.0.0.1:8083",
+		PProfAddr:    "127.0.0.1:18083",
 		Arch:         "amd64",
 	},
 	{
 		HostName:     "a",
 		InstanceName: "Phaenus",
 		ListenAddr:   "127.0.0.1:8084",
+		PProfAddr:    "127.0.0.1:18084",
 		Arch:         "arm",
 	},
 }
@@ -177,6 +183,9 @@ func main() {
 		args := []string{"-oBatchMode=yes", h.HostName, binaryLocation}
 		args = append(args, commonParams...)
 		args = append(args, "-dirname="+dirname, "-instance="+h.InstanceName, "-listen="+h.ListenAddr)
+		if h.PProfAddr != "" {
+			args = append(args, "-pprof-addr="+h.PProfAddr)
+		}
 
 		cmd := exec.Command("ssh", args...)
 		cmd.Stdout = os.Stdout

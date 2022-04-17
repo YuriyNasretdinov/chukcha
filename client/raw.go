@@ -186,6 +186,43 @@ func (r *Raw) ListChunks(ctx context.Context, addr, category string, fromReplica
 	return res, nil
 }
 
+// ListCategories returns the list of categories for the appropriate Chukcha instance.
+func (r *Raw) ListCategories(ctx context.Context, addr string) ([]string, error) {
+	listURL := fmt.Sprintf("%s/listCategories", addr)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", listURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating new http request: %w", err)
+	}
+
+	resp, err := r.cl.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		return nil, fmt.Errorf("listCategories error: %s", body)
+	}
+
+	var res []string
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
+	}
+
+	if r.debug {
+		r.logger().Printf("listCategories(%q) returned %+v", addr, res)
+	}
+
+	return res, nil
+}
+
 func (r *Raw) Ack(ctx context.Context, addr, category, chunk string, size uint64) error {
 	u := url.Values{}
 	u.Add("chunk", chunk)

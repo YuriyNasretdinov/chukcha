@@ -16,6 +16,7 @@ var (
 	instanceName = flag.String("instance", "", "The unique instance name (e.g. chukcha1)")
 	dirname      = flag.String("dirname", "", "The directory name where to put all the data")
 	listenAddr   = flag.String("listen", "127.0.0.1:8080", "Network adddress to listen on")
+	pprofAddr    = flag.String("pprof-addr", "", "Network address to listen on for pprof CPU and memory profiling")
 	peers        = flag.String("peers", "", `Comma-separated list of other nodes in the cluster (can include itself), e.g. "Moscow=127.0.0.1:8080,Voronezh=127.0.0.1:8081"`)
 
 	maxChunkSize        = flag.Uint64("max-chunk-size", 20*1024*1024, "maximum size of chunks stored")
@@ -45,6 +46,7 @@ func main() {
 		ListenAddr:          *listenAddr,
 		MaxChunkSize:        *maxChunkSize,
 		RotateChunkInterval: *rotateChunkInterval,
+		PProfAddr:           *pprofAddr,
 	}
 
 	if *peers != "" {

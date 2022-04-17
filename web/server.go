@@ -55,6 +55,8 @@ func (s *Server) handler(ctx *fasthttp.RequestCtx) {
 		s.replicationAckHandler(ctx)
 	case "/listChunks":
 		s.listChunksHandler(ctx)
+	case "/listCategories":
+		s.listCategoriesHandler(ctx)
 	default:
 		ctx.WriteString("Hello world!")
 	}
@@ -192,7 +194,7 @@ func (s *Server) readHandler(ctx *fasthttp.RequestCtx) {
 
 	fromReplication, _ := ctx.QueryArgs().GetUint("from_replication")
 	if fromReplication == 1 {
-		// c.logger.Printf("sleeping for 8 seconds for request from replication for chunk %v", string(chunk))
+		// s.logger.Printf("sleeping for 8 seconds for request from replication for chunk %v", string(chunk))
 		// time.Sleep(time.Second * 8)
 	}
 
@@ -251,6 +253,24 @@ func (s *Server) listChunksHandler(ctx *fasthttp.RequestCtx) {
 	}
 
 	json.NewEncoder(ctx).Encode(chunks)
+}
+
+func (s *Server) listCategoriesHandler(ctx *fasthttp.RequestCtx) {
+	res := make([]string, 0)
+	dis, err := os.ReadDir(s.dirname)
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.WriteString(err.Error())
+		return
+	}
+
+	for _, d := range dis {
+		if d.IsDir() {
+			res = append(res, d.Name())
+		}
+	}
+
+	json.NewEncoder(ctx).Encode(res)
 }
 
 // Serve listens to HTTP connections
