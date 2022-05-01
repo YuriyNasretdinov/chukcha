@@ -20,6 +20,7 @@ import (
 
 var categoryName = flag.String("category", "stdin", "The category being tested")
 var debug = flag.Bool("debug", false, "Debug mode")
+var ack = flag.Bool("ack", true, "Acknowledge reads")
 var minSyncReplicas = flag.Uint("min-sync-replicas", 0, "How many replicas to wait when writing a message")
 var addrsFlag = flag.String("addrs", "http://127.0.0.1:8080,http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083,http://127.0.0.1:8084", "List of Chukcha servers")
 
@@ -49,6 +50,7 @@ func main() {
 
 	cl.SetDebug(*debug)
 	cl.SetMinSyncReplicas(*minSyncReplicas)
+	cl.SetAcknowledge(*ack)
 
 	fmt.Printf("Enter the messages into the prompt to send them to one of Chukcha replicas\n")
 

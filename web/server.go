@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -53,6 +54,8 @@ func (s *Server) handler(ctx *fasthttp.RequestCtx) {
 		s.ackHandler(ctx)
 	case "/replication/ack":
 		s.replicationAckHandler(ctx)
+	case "/replication/events":
+		s.replicationEventsHandler(ctx)
 	case "/listChunks":
 		s.listChunksHandler(ctx)
 	case "/listCategories":
@@ -168,7 +171,7 @@ func (s *Server) replicationAckHandler(ctx *fasthttp.RequestCtx) {
 	// instance is the name of instance that has successfully downloaded the
 	// respective chunk part.
 	instance := ctx.QueryArgs().Peek("instance")
-	if len(chunk) == 0 {
+	if len(instance) == 0 {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 		ctx.WriteString("bad `instance` GET param: replica name must be provided")
 		return
@@ -182,6 +185,37 @@ func (s *Server) replicationAckHandler(ctx *fasthttp.RequestCtx) {
 	}
 
 	storage.ReplicationAck(ctx, string(chunk), string(instance), uint64(size))
+}
+
+// registerReplicationEvents is sending the events stream to the connected replica.
+func (s *Server) replicationEventsHandler(ctx *fasthttp.RequestCtx) {
+	// instance is the name of the connected replica.
+	instance := ctx.QueryArgs().Peek("instance")
+	if len(instance) == 0 {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.WriteString("bad `instance` GET param: replica name must be provided")
+		return
+	}
+
+	eventsCh := make(chan replication.Chunk, 1000)
+
+	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
+		wr := json.NewEncoder(w)
+
+		for ch := range eventsCh {
+			if err := wr.Encode(ch); err != nil {
+				s.logger.Printf("error encoding event: %v", err)
+				return
+			}
+
+			if err := w.Flush(); err != nil {
+				s.logger.Printf("error flushing event: %v", err)
+				return
+			}
+		}
+	})
+
+	s.replStorage.RegisterReplica(string(instance), eventsCh)
 }
 
 func (s *Server) readHandler(ctx *fasthttp.RequestCtx) {

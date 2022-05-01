@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 )
 
 const systemCategoryPrefix = "_system-"
@@ -17,38 +18,49 @@ type Storage struct {
 	logger          *log.Logger
 	dw              DirectWriter
 	currentInstance string
+
+	mu                sync.Mutex
+	connectedReplicas map[string]chan Chunk
 }
 
 func NewStorage(logger *log.Logger, dw DirectWriter, currentInstance string) *Storage {
 	return &Storage{
-		logger:          logger,
-		dw:              dw,
-		currentInstance: currentInstance,
+		logger:            logger,
+		dw:                dw,
+		currentInstance:   currentInstance,
+		connectedReplicas: make(map[string]chan Chunk),
 	}
 }
 
-func (s *Storage) AfterCreatingChunk(ctx context.Context, category string, fileName string) error {
-	if err := s.dw.SetReplicationDisabled(systemReplication, true); err != nil {
-		return fmt.Errorf("setting replication disabled: %v", err)
-	}
+func (s *Storage) RegisterReplica(instanceName string, ch chan Chunk) {
+	s.mu.Lock()
+	s.connectedReplicas[instanceName] = ch
+	s.mu.Unlock()
 
-	ch := Chunk{
+	select {
+	case ch <- Chunk{}:
+	default:
+	}
+}
+
+func (s *Storage) AfterCreatingChunk(ctx context.Context, category string, fileName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	chunk := Chunk{
 		Owner:    s.currentInstance,
 		Category: category,
 		FileName: fileName,
 	}
 
-	buf, err := json.Marshal(&ch)
-	if err != nil {
-		return fmt.Errorf("marshalling chunk: %v", err)
+	for instanceName, ch := range s.connectedReplicas {
+		select {
+		case ch <- chunk:
+		default:
+			delete(s.connectedReplicas, instanceName)
+			close(ch)
+		}
 	}
-	buf = append(buf, '\n')
-
-	if _, _, err := s.dw.Write(ctx, systemReplication, buf); err != nil {
-		return fmt.Errorf("writing chunk to system replication category: %v", err)
-	}
-
-	return nil
 }
 
 func (s *Storage) AfterAcknowledgeChunk(ctx context.Context, category string, fileName string) error {

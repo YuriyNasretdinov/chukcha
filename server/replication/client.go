@@ -204,7 +204,12 @@ func (c *Client) startPerPeerLoops(ctx context.Context, category string, peers [
 
 func (c *Client) perPeerLoop(ctx context.Context, category string, p Peer, onChunk func(context.Context, Chunk)) {
 	if category == systemReplication {
-		go c.downloadExistingCategories(ctx, p, onChunk)
+		for {
+			if err := c.replicationLoop(ctx, p, onChunk); err != nil {
+				c.logger.Printf("Replication loop finished with error for instance %s: %v", p.InstanceName, err)
+				time.Sleep(retryTimeout)
+			}
+		}
 	}
 
 	// TODO: handle change of address for peer
@@ -268,6 +273,49 @@ func (c *Client) perPeerLoop(ctx context.Context, category string, p Peer, onChu
 	}
 }
 
+func (c *Client) replicationLoop(parentCtx context.Context, p Peer, onChunk func(context.Context, Chunk)) error {
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
+	u := url.Values{}
+	u.Add("instance", c.instanceName)
+
+	resp, err := http.Get("http://" + p.ListenAddr + "/replication/events?" + u.Encode())
+	if err != nil {
+		return fmt.Errorf("could not GET replication events from peer %q: %w", p.InstanceName, err)
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := ioutil.ReadAll(resp.Body)
+		return fmt.Errorf("reading replication events from peer %q: got HTTP status %s (response body: %s)", p.InstanceName, resp.Status, body)
+	}
+
+	categoryDownloadStarted := false
+
+	var emptyChunk Chunk
+	d := json.NewDecoder(resp.Body)
+	for {
+		var ch Chunk
+		err := d.Decode(&ch)
+		if err != nil {
+			return fmt.Errorf("reading replication events from peer %q: %v", p.InstanceName, err)
+		}
+
+		if !categoryDownloadStarted {
+			go c.downloadExistingCategories(ctx, p, onChunk)
+			categoryDownloadStarted = true
+		}
+
+		if ch == emptyChunk {
+			continue
+		}
+
+		onChunk(ctx, ch)
+	}
+}
+
 func (c *Client) downloadExistingCategories(ctx context.Context, p Peer, onChunk func(context.Context, Chunk)) {
 	for {
 		err := c.tryDownloadExistingCategories(ctx, p, onChunk)
@@ -276,7 +324,11 @@ func (c *Client) downloadExistingCategories(ctx context.Context, p Peer, onChunk
 		}
 
 		c.logger.Printf("Failed to download existing categories from peer %+v: %v", p, err)
-		time.Sleep(retryTimeout)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(retryTimeout):
+		}
 	}
 }
 

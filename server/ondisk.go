@@ -22,7 +22,7 @@ var errBufTooSmall = errors.New("the buffer is too small to contain a single mes
 const DeletedSuffix = ".deleted"
 
 type StorageHooks interface {
-	AfterCreatingChunk(ctx context.Context, category string, fileName string) error
+	AfterCreatingChunk(ctx context.Context, category string, fileName string)
 	AfterAcknowledgeChunk(ctx context.Context, category string, fileName string) error
 }
 
@@ -65,12 +65,11 @@ type OnDisk struct {
 	downloadNotifications       map[string]*downloadNotification
 
 	// writeMu protects lastChunk* entries
-	writeMu                     sync.Mutex
-	lastChunkFp                 *os.File
-	lastChunk                   string
-	lastChunkSize               uint64
-	lastChunkIdx                uint64
-	lastChunkAddedToReplication bool
+	writeMu       sync.Mutex
+	lastChunkFp   *os.File
+	lastChunk     string
+	lastChunkSize uint64
+	lastChunkIdx  uint64
 }
 
 // NewOnDisk creates a server that stores all it's data on disk.
@@ -182,15 +181,10 @@ func (s *OnDisk) createNextChunk(ctx context.Context) error {
 	s.lastChunk = newChunk
 	s.lastChunkSize = 0
 	s.lastChunkIdx++
-	s.lastChunkAddedToReplication = false
 
 	if !s.replicationDisabled {
-		if err := s.repl.AfterCreatingChunk(ctx, s.category, s.lastChunk); err != nil {
-			return fmt.Errorf("after creating new chunk: %w", err)
-		}
+		s.repl.AfterCreatingChunk(ctx, s.category, s.lastChunk)
 	}
-
-	s.lastChunkAddedToReplication = true
 
 	return nil
 }
@@ -227,13 +221,6 @@ func (s *OnDisk) Write(ctx context.Context, msgs []byte) (chunkName string, off 
 		if err := s.createNextChunk(ctx); err != nil {
 			return "", 0, fmt.Errorf("creating next chunk %v", err)
 		}
-	}
-
-	if !s.lastChunkAddedToReplication && !s.replicationDisabled {
-		if err := s.repl.AfterCreatingChunk(ctx, s.category, s.lastChunk); err != nil {
-			return "", 0, fmt.Errorf("after creating new chunk: %w", err)
-		}
-		s.lastChunkAddedToReplication = true
 	}
 
 	fp, err := s.getLastChunkFp()
@@ -338,7 +325,9 @@ func (s *OnDisk) doAckChunk(chunk string) error {
 	chunkFilename := filepath.Join(s.dirname, chunk)
 
 	fp, err := os.OpenFile(chunkFilename, os.O_WRONLY, 0666)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
 		return fmt.Errorf("failed to get file descriptor for ack operation for chunk %q: %v", chunk, err)
 	}
 	defer fp.Close()
