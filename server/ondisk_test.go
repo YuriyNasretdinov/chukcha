@@ -71,6 +71,22 @@ func TestReadWrite(t *testing.T) {
 	}
 }
 
+func TestWriteChecksEOL(t *testing.T) {
+	srv := testNewOnDisk(t, getTempDir(t))
+
+	if _, _, err := srv.Write(context.Background(), []byte("lines\nwithout\nEOL")); err == nil {
+		t.Fatalf("Write with a body that doesn't end with a new line character returned no errors")
+	}
+}
+
+func TestWriteChecksMaxLength(t *testing.T) {
+	srv := testNewOnDisk(t, getTempDir(t))
+
+	if _, _, err := srv.Write(context.Background(), []byte("lines\nthat exceeds 10 characters at the end\n")); err == nil {
+		t.Fatalf("Write with a body that contains lines that are longer than maxLine characters returned no errors")
+	}
+}
+
 func TestAckOfTheLastChunk(t *testing.T) {
 	srv := testNewOnDisk(t, getTempDir(t))
 
@@ -127,7 +143,7 @@ func (n *nilHooks) AfterAcknowledgeChunk(ctx context.Context, category string, f
 func testNewOnDisk(t *testing.T, dir string) *OnDisk {
 	t.Helper()
 
-	srv, err := NewOnDisk(log.Default(), dir, "test", "moscow", 20*1024*1024, time.Minute, &nilHooks{})
+	srv, err := NewOnDisk(log.Default(), dir, "test", "moscow", 20*1024*1024, 10, time.Minute, &nilHooks{})
 	if err != nil {
 		t.Fatalf("NewOnDisk(): %v", err)
 	}

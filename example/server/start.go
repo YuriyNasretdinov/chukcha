@@ -168,7 +168,7 @@ func main() {
 		peers = append(peers, fmt.Sprintf("%s=%s", h.InstanceName, h.ListenAddr))
 	}
 
-	commonParams := []string{"-cluster=AllComrads", "-rotate-chunk-interval=10s", "-peers=" + strings.Join(peers, ",")}
+	commonParams := []string{"-rotate-chunk-interval=10s", "-peers=" + strings.Join(peers, ",")}
 
 	err = runInParallel(func(h Host) error {
 		binaryLocation := "./chukcha"

@@ -34,6 +34,11 @@ func NewStorage(logger *log.Logger, dw DirectWriter, currentInstance string) *St
 
 func (s *Storage) RegisterReplica(instanceName string, ch chan Chunk) {
 	s.mu.Lock()
+	// nobody will ever write to this channel again so we must close it
+	// to prevent goroutine leaks
+	if oldCh, ok := s.connectedReplicas[instanceName]; ok {
+		close(oldCh)
+	}
 	s.connectedReplicas[instanceName] = ch
 	s.mu.Unlock()
 

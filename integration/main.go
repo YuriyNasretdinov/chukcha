@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/YuriyNasretdinov/chukcha/server"
@@ -22,7 +23,6 @@ type InitArgs struct {
 	LogWriter io.Writer
 	Peers     []replication.Peer
 
-	ClusterName  string
 	InstanceName string
 
 	DirName    string
@@ -42,13 +42,16 @@ type InitArgs struct {
 func InitAndServe(a InitArgs) error {
 	logger := log.New(a.LogWriter, "["+a.InstanceName+"] ", log.LstdFlags|log.Lmicroseconds)
 
-	filename := filepath.Join(a.DirName, "write_test")
+	filename := filepath.Join(a.DirName, "running.lock")
 	fp, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		return fmt.Errorf("creating test file %q: %s", filename, err)
 	}
-	fp.Close()
-	os.Remove(fp.Name())
+	defer fp.Close()
+
+	if err := syscall.Flock(int(fp.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return fmt.Errorf("getting file lock for file %q failed, another instance is running? (error: %v)", filename, err)
+	}
 
 	if a.PProfAddr != "" {
 		go func() {
@@ -172,5 +175,5 @@ func (c *OnDiskCreator) newOnDisk(logger *log.Logger, category string) (*server.
 		return nil, fmt.Errorf("creating directory for the category: %v", err)
 	}
 
-	return server.NewOnDisk(logger, dir, category, c.instanceName, c.maxChunkSize, c.rotateChunkInterval, c.replStorage)
+	return server.NewOnDisk(logger, dir, category, c.instanceName, c.maxChunkSize, replication.BatchSize-1, c.rotateChunkInterval, c.replStorage)
 }

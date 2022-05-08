@@ -12,7 +12,6 @@ import (
 )
 
 var (
-	clusterName  = flag.String("cluster", "default", "The name of the cluster (must specify if sharing a single etcd instance with several Chukcha instances)")
 	instanceName = flag.String("instance", "", "The unique instance name (e.g. chukcha1)")
 	dirname      = flag.String("dirname", "", "The directory name where to put all the data")
 	listenAddr   = flag.String("listen", "127.0.0.1:8080", "Network adddress to listen on")
@@ -26,10 +25,6 @@ var (
 func main() {
 	flag.Parse()
 
-	if *clusterName == "" {
-		log.Fatalf("The flag `--cluster` must not be empty")
-	}
-
 	if *instanceName == "" {
 		log.Fatalf("The flag `--instance` must be provided")
 	}
@@ -40,7 +35,6 @@ func main() {
 
 	a := integration.InitArgs{
 		LogWriter:           os.Stderr,
-		ClusterName:         *clusterName,
 		InstanceName:        *instanceName,
 		DirName:             *dirname,
 		ListenAddr:          *listenAddr,

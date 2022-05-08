@@ -23,11 +23,12 @@ import (
 	"github.com/YuriyNasretdinov/chukcha/protocol"
 )
 
+// BatchSize is the max number of bytes that can be downloaded in a single request in replication.
+const BatchSize = 4 * 1024 * 1024 // 4 MiB
+
 const defaultClientTimeout = 10 * time.Second
 const pollInterval = 50 * time.Millisecond
 const retryTimeout = 1 * time.Second
-
-const batchSize = 4 * 1024 * 1024 // 4 MiB
 
 var errNotFound = errors.New("chunk not found")
 var errIncomplete = errors.New("chunk is not complete")
@@ -265,6 +266,7 @@ func (c *Client) perPeerLoop(ctx context.Context, category string, p Peer, onChu
 
 		if err := ioutil.WriteFile(stateFilePath+".tmp", stateContents, 0666); err != nil {
 			c.logger.Printf("Could not write state file %q: %v", stateFilePath+".tmp", err)
+			continue
 		}
 
 		if err := os.Rename(stateFilePath+".tmp", stateFilePath); err != nil {
@@ -280,7 +282,12 @@ func (c *Client) replicationLoop(parentCtx context.Context, p Peer, onChunk func
 	u := url.Values{}
 	u.Add("instance", c.instanceName)
 
-	resp, err := http.Get("http://" + p.ListenAddr + "/replication/events?" + u.Encode())
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://"+p.ListenAddr+"/replication/events?"+u.Encode(), nil)
+	if err != nil {
+		return fmt.Errorf("creating a request with context: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("could not GET replication events from peer %q: %w", p.InstanceName, err)
 	}
@@ -295,12 +302,32 @@ func (c *Client) replicationLoop(parentCtx context.Context, p Peer, onChunk func
 	categoryDownloadStarted := false
 
 	var emptyChunk Chunk
+	readSuccessCh := make(chan bool, 1)
 	d := json.NewDecoder(resp.Body)
+
+	go func() {
+		for {
+			select {
+			case <-readSuccessCh:
+			case <-time.After(30 * time.Second):
+				cancel()
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	for {
 		var ch Chunk
 		err := d.Decode(&ch)
 		if err != nil {
 			return fmt.Errorf("reading replication events from peer %q: %v", p.InstanceName, err)
+		}
+
+		select {
+		case readSuccessCh <- true:
+		default:
 		}
 
 		if !categoryDownloadStarted {
@@ -335,8 +362,7 @@ func (c *Client) downloadExistingCategories(ctx context.Context, p Peer, onChunk
 func (c *Client) tryDownloadExistingCategories(ctx context.Context, p Peer, onChunk func(context.Context, Chunk)) error {
 	c.logger.Printf("Downloading all categories from peer %+v", p)
 
-	cl := client.NewRaw(http.DefaultClient)
-	cats, err := cl.ListCategories(ctx, "http://"+p.ListenAddr)
+	cats, err := c.r.ListCategories(ctx, "http://"+p.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("listing categories: %w", err)
 	}
@@ -348,7 +374,7 @@ func (c *Client) tryDownloadExistingCategories(ctx context.Context, p Peer, onCh
 
 		c.logger.Printf("Downloading list of chunks for category %q from peer %+v", cat, p)
 
-		chunks, err := cl.ListChunks(ctx, "http://"+p.ListenAddr, cat, true)
+		chunks, err := c.r.ListChunks(ctx, "http://"+p.ListenAddr, cat, true)
 		if err != nil {
 			return fmt.Errorf("listing chunks for category %q: %w", cat, err)
 		}
@@ -607,7 +633,7 @@ func (c *CategoryDownloader) getChunkInfo(ctx context.Context, addr string, curC
 func (c *CategoryDownloader) downloadPart(ctx context.Context, addr string, ch Chunk, off int64) ([]byte, error) {
 	u := url.Values{}
 	u.Add("off", strconv.Itoa(int(off)))
-	u.Add("maxSize", strconv.Itoa(batchSize))
+	u.Add("max_size", strconv.Itoa(BatchSize))
 	u.Add("chunk", ch.FileName)
 	u.Add("category", ch.Category)
 	u.Add("from_replication", "1")

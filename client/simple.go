@@ -21,6 +21,7 @@ const defaultScratchSize = 64 * 1024
 type Simple struct {
 	Logger *log.Logger
 
+	readTimeout  time.Duration
 	pollInterval time.Duration
 	acknowledge  bool
 	debug        bool
@@ -45,6 +46,7 @@ func NewSimple(addrs []string) *Simple {
 	return &Simple{
 		addrs:        addrs,
 		pollInterval: time.Millisecond * 100,
+		readTimeout:  time.Second * 30,
 		acknowledge:  true,
 		cl:           NewRaw(&http.Client{}),
 		st:           &state{Offsets: make(map[string]*ReadOffset)},
@@ -56,6 +58,13 @@ func NewSimple(addrs []string) *Simple {
 // (default is 100ms)
 func (s *Simple) SetPollInterval(d time.Duration) {
 	s.pollInterval = d
+}
+
+// SetReadTimeout sets the default read timeout for read requests
+// to Chukcha.
+// (default is 30s)
+func (s *Simple) SetReadTimeout(v time.Duration) {
+	s.readTimeout = v
 }
 
 // SetDebug either enables or disables debug logging for the client.
@@ -138,7 +147,7 @@ func (s *Simple) Process(ctx context.Context, category string, scratch []byte, p
 		select {
 		case <-time.After(s.pollInterval):
 		case <-ctx.Done():
-			return context.Canceled
+			return ctx.Err()
 		}
 	}
 }
@@ -178,8 +187,11 @@ func (s *Simple) getAddr() string {
 	return s.addrs[addrIdx]
 }
 
-func (s *Simple) processInstance(ctx context.Context, addr, instance, category string, scratch []byte, processFn func([]byte) error) error {
+func (s *Simple) processInstance(parentCtx context.Context, addr, instance, category string, scratch []byte, processFn func([]byte) error) error {
 	curCh := s.st.Offsets[instance]
+
+	ctx, cancel := context.WithTimeout(parentCtx, s.readTimeout)
+	defer cancel()
 
 	res, found, err := s.cl.Read(ctx, addr, category, curCh.CurChunk.Name, curCh.Off, scratch)
 	if err != nil {

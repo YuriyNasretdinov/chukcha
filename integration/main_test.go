@@ -111,7 +111,6 @@ func runChukcha(t *testing.T, withReplica bool, w tweaks) (addrs []string, etcdA
 				LogWriter:           log.Default().Writer(),
 				Peers:               peers,
 				InstanceName:        instanceName,
-				ClusterName:         "testRussia",
 				DirName:             dirName,
 				ListenAddr:          fmt.Sprintf("localhost:%d", port),
 				MaxChunkSize:        20 * 1024 * 1024,

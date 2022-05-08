@@ -52,6 +52,7 @@ type OnDisk struct {
 	category     string
 	instanceName string
 	maxChunkSize uint64
+	maxLineSize  uint64
 
 	replicationDisabled bool
 
@@ -73,7 +74,7 @@ type OnDisk struct {
 }
 
 // NewOnDisk creates a server that stores all it's data on disk.
-func NewOnDisk(logger *log.Logger, dirname, category, instanceName string, maxChunkSize uint64, rotateChunkInterval time.Duration, repl StorageHooks) (*OnDisk, error) {
+func NewOnDisk(logger *log.Logger, dirname, category, instanceName string, maxChunkSize uint64, maxLineSize uint64, rotateChunkInterval time.Duration, repl StorageHooks) (*OnDisk, error) {
 	s := &OnDisk{
 		logger:                    logger,
 		dirname:                   dirname,
@@ -81,6 +82,7 @@ func NewOnDisk(logger *log.Logger, dirname, category, instanceName string, maxCh
 		instanceName:              instanceName,
 		repl:                      repl,
 		maxChunkSize:              maxChunkSize,
+		maxLineSize:               maxLineSize,
 		downloadNotifications:     make(map[string]*downloadNotification),
 		downloadNotificationChans: make(map[int]chan bool),
 		downloadNotificationSubs:  heap.NewMin[replicationSub](),
@@ -210,10 +212,29 @@ func (s *OnDisk) SetReplicationDisabled(v bool) {
 	s.replicationDisabled = v
 }
 
+func (s *OnDisk) shortenLine(ln []byte) string {
+	maxLen := 100
+	if len(ln) <= maxLen {
+		return string(ln)
+	}
+
+	return string(ln[:maxLen]) + "..."
+}
+
 // Write accepts the messages from the clients and stores them.
 func (s *OnDisk) Write(ctx context.Context, msgs []byte) (chunkName string, off int64, err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+
+	if len(msgs) > 0 && msgs[len(msgs)-1] != '\n' {
+		return "", 0, fmt.Errorf("messages body must end with new line character")
+	}
+
+	for _, ln := range bytes.Split(msgs, []byte{'\n'}) {
+		if len(ln) > int(s.maxLineSize) {
+			return "", 0, fmt.Errorf("processing message %q: messages must not exceed %d bytes", s.shortenLine(ln), s.maxLineSize)
+		}
+	}
 
 	willExceedMaxChunkSize := s.lastChunkSize+uint64(len(msgs)) > s.maxChunkSize
 

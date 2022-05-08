@@ -102,7 +102,7 @@ func (r *Raw) Write(ctx context.Context, addr string, category string, msgs []by
 func (r *Raw) Read(ctx context.Context, addr string, category string, chunk string, off uint64, scratch []byte) (res []byte, found bool, err error) {
 	u := url.Values{}
 	u.Add("off", strconv.FormatInt(int64(off), 10))
-	u.Add("maxSize", strconv.Itoa(len(scratch)))
+	u.Add("max_size", strconv.Itoa(len(scratch)))
 	u.Add("chunk", chunk)
 	u.Add("category", category)
 
