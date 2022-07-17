@@ -2,8 +2,6 @@ package replication
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log"
 	"sync"
 )
@@ -16,23 +14,21 @@ const systemAck = systemCategoryPrefix + "ack"
 // ensure that chunks are replicated.
 type Storage struct {
 	logger          *log.Logger
-	dw              DirectWriter
 	currentInstance string
 
 	mu                sync.Mutex
-	connectedReplicas map[string]chan Chunk
+	connectedReplicas map[string]chan Message
 }
 
-func NewStorage(logger *log.Logger, dw DirectWriter, currentInstance string) *Storage {
+func NewStorage(logger *log.Logger, currentInstance string) *Storage {
 	return &Storage{
 		logger:            logger,
-		dw:                dw,
 		currentInstance:   currentInstance,
-		connectedReplicas: make(map[string]chan Chunk),
+		connectedReplicas: make(map[string]chan Message),
 	}
 }
 
-func (s *Storage) RegisterReplica(instanceName string, ch chan Chunk) {
+func (s *Storage) RegisterReplica(instanceName string, ch chan Message) {
 	s.mu.Lock()
 	// nobody will ever write to this channel again so we must close it
 	// to prevent goroutine leaks
@@ -43,7 +39,7 @@ func (s *Storage) RegisterReplica(instanceName string, ch chan Chunk) {
 	s.mu.Unlock()
 
 	select {
-	case ch <- Chunk{}:
+	case ch <- Message{}:
 	default:
 	}
 }
@@ -58,9 +54,14 @@ func (s *Storage) AfterCreatingChunk(ctx context.Context, category string, fileN
 		FileName: fileName,
 	}
 
+	msg := Message{
+		Type:  ChunkCreated,
+		Chunk: chunk,
+	}
+
 	for instanceName, ch := range s.connectedReplicas {
 		select {
-		case ch <- chunk:
+		case ch <- msg:
 		default:
 			delete(s.connectedReplicas, instanceName)
 			close(ch)
@@ -68,26 +69,27 @@ func (s *Storage) AfterCreatingChunk(ctx context.Context, category string, fileN
 	}
 }
 
-func (s *Storage) AfterAcknowledgeChunk(ctx context.Context, category string, fileName string) error {
-	if err := s.dw.SetReplicationDisabled(systemAck, true); err != nil {
-		return fmt.Errorf("setting replication disabled: %v", err)
-	}
+func (s *Storage) AfterAcknowledgeChunk(ctx context.Context, category string, fileName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	ch := Chunk{
+	chunk := Chunk{
 		Owner:    s.currentInstance,
 		Category: category,
 		FileName: fileName,
 	}
 
-	buf, err := json.Marshal(&ch)
-	if err != nil {
-		return fmt.Errorf("marshalling chunk: %v", err)
-	}
-	buf = append(buf, '\n')
-
-	if _, _, err := s.dw.Write(ctx, systemAck, buf); err != nil {
-		return fmt.Errorf("writing chunk to system ack category: %v", err)
+	msg := Message{
+		Type:  ChunkAcknowledged,
+		Chunk: chunk,
 	}
 
-	return nil
+	for instanceName, ch := range s.connectedReplicas {
+		select {
+		case ch <- msg:
+		default:
+			delete(s.connectedReplicas, instanceName)
+			close(ch)
+		}
+	}
 }

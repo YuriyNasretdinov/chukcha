@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YuriyNasretdinov/chukcha/replication"
 	"github.com/YuriyNasretdinov/chukcha/server"
-	"github.com/YuriyNasretdinov/chukcha/server/replication"
 	"github.com/valyala/fasthttp"
 )
 
@@ -217,7 +217,7 @@ func (s *Server) replicationEventsHandler(ctx *fasthttp.RequestCtx) error {
 		return &errWithCode{code: fasthttp.StatusBadRequest, text: "bad `instance` GET param: replica name must be provided"}
 	}
 
-	eventsCh := make(chan replication.Chunk, 1000)
+	eventsCh := make(chan replication.Message, 1000)
 
 	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
 		wr := json.NewEncoder(w)

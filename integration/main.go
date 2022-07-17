@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,12 +9,11 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"path/filepath"
-	"sync"
 	"syscall"
 	"time"
 
+	"github.com/YuriyNasretdinov/chukcha/replication"
 	"github.com/YuriyNasretdinov/chukcha/server"
-	"github.com/YuriyNasretdinov/chukcha/server/replication"
 	"github.com/YuriyNasretdinov/chukcha/web"
 )
 
@@ -60,120 +58,15 @@ func InitAndServe(a InitArgs) error {
 		}()
 	}
 
-	creator := &OnDiskCreator{
-		logger:              logger,
-		dirName:             a.DirName,
-		instanceName:        a.InstanceName,
-		storages:            make(map[string]*server.OnDisk),
-		maxChunkSize:        a.MaxChunkSize,
-		rotateChunkInterval: a.RotateChunkInterval,
-	}
-	replStorage := replication.NewStorage(logger, creator, a.InstanceName)
-	creator.replStorage = replStorage
+	replStorage := replication.NewStorage(logger, a.InstanceName)
+
+	creator := server.NewOnDiskCreator(logger, a.DirName, a.InstanceName, replStorage, a.MaxChunkSize, a.RotateChunkInterval)
 
 	s := web.NewServer(logger, a.InstanceName, a.DirName, a.ListenAddr, replStorage, creator.Get)
 
 	replClient := replication.NewClient(logger, a.DirName, creator, a.Peers, a.InstanceName)
-	go replClient.Loop(context.Background(), a.DisableAcknowledge)
+	go replClient.Loop(context.Background())
 
 	logger.Printf("Listening connections at %q", a.ListenAddr)
 	return s.Serve()
-}
-
-type OnDiskCreator struct {
-	logger              *log.Logger
-	dirName             string
-	instanceName        string
-	replStorage         *replication.Storage
-	maxChunkSize        uint64
-	rotateChunkInterval time.Duration
-
-	m        sync.Mutex
-	storages map[string]*server.OnDisk
-}
-
-// Stat returns information about the chunk: whether or not it exists and it's size.
-// If file does not exist no error is returned.
-func (c *OnDiskCreator) Stat(category string, fileName string) (size int64, exists bool, deleted bool, err error) {
-	filePath := filepath.Join(c.dirName, category, fileName)
-
-	st, err := os.Stat(filePath)
-	if errors.Is(err, os.ErrNotExist) {
-		_, deletedErr := os.Stat(filePath + server.DeletedSuffix)
-		if errors.Is(deletedErr, os.ErrNotExist) {
-			return 0, false, false, nil
-		} else if deletedErr != nil {
-			return 0, false, false, deletedErr
-		}
-
-		return 0, false, true, nil
-	} else if err != nil {
-		return 0, false, false, err
-	}
-
-	return st.Size(), true, false, nil
-}
-
-func (c *OnDiskCreator) WriteDirect(category string, fileName string, contents []byte) error {
-	inst, err := c.Get(category)
-	if err != nil {
-		return err
-	}
-
-	return inst.WriteDirect(fileName, contents)
-}
-
-func (c *OnDiskCreator) SetReplicationDisabled(category string, v bool) error {
-	inst, err := c.Get(category)
-	if err != nil {
-		return err
-	}
-
-	inst.SetReplicationDisabled(v)
-	return nil
-}
-
-func (c *OnDiskCreator) Write(ctx context.Context, category string, msgs []byte) (chunkName string, off int64, err error) {
-	inst, err := c.Get(category)
-	if err != nil {
-		return "", 0, err
-	}
-
-	return inst.Write(ctx, msgs)
-}
-
-func (c *OnDiskCreator) AckDirect(ctx context.Context, category string, chunk string) error {
-	inst, err := c.Get(category)
-	if err != nil {
-		return err
-	}
-
-	return inst.AckDirect(chunk)
-}
-
-func (c *OnDiskCreator) Get(category string) (*server.OnDisk, error) {
-	c.m.Lock()
-	defer c.m.Unlock()
-
-	storage, ok := c.storages[category]
-	if ok {
-		return storage, nil
-	}
-
-	storage, err := c.newOnDisk(c.logger, category)
-	if err != nil {
-		return nil, err
-	}
-
-	c.storages[category] = storage
-	return storage, nil
-}
-
-func (c *OnDiskCreator) newOnDisk(logger *log.Logger, category string) (*server.OnDisk, error) {
-	dir := filepath.Join(c.dirName, category)
-	if err := os.MkdirAll(dir, 0777); err != nil {
-		return nil, fmt.Errorf("creating directory for the category: %v", err)
-	}
-
-	return server.NewOnDisk(logger, dir, category, c.instanceName, c.maxChunkSize, replication.BatchSize-1, c.rotateChunkInterval, c.replStorage)
 }

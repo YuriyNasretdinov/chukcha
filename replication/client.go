@@ -11,8 +11,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -93,25 +91,16 @@ func NewClient(logger *log.Logger, dirname string, wr DirectWriter, peers []Peer
 	raw.Logger = logger
 
 	return &Client{
-		logger:                 logger,
-		dirname:                dirname,
-		wr:                     wr,
-		instanceName:           instanceName,
-		httpCl:                 httpCl,
-		r:                      raw,
-		peers:                  peers,
-		perCategoryPerReplica:  make(map[categoryAndReplica]*CategoryDownloader),
-		peersAlreadyStarted:    make(map[string]bool),
-		ackPeersAlreadyStarted: make(map[string]bool),
+		logger:                logger,
+		dirname:               dirname,
+		wr:                    wr,
+		instanceName:          instanceName,
+		httpCl:                httpCl,
+		r:                     raw,
+		peers:                 peers,
+		perCategoryPerReplica: make(map[categoryAndReplica]*CategoryDownloader),
+		peersAlreadyStarted:   make(map[string]bool),
 	}
-}
-
-func (c *Client) Loop(ctx context.Context, disableAcknowledge bool) {
-	if !disableAcknowledge {
-		go c.startPerPeerLoops(ctx, systemAck, c.peers, c.ackPeersAlreadyStarted, c.onNewChunkInAckQueue)
-	}
-
-	c.startPerPeerLoops(ctx, systemReplication, c.peers, c.peersAlreadyStarted, c.onNewChunkInReplicationQueue)
 }
 
 // We only care about the situation when the chunk is being downloaded
@@ -187,47 +176,20 @@ func (c *Client) onNewChunkInReplicationQueue(ctx context.Context, ch Chunk) {
 	downloader.eventsCh <- ch
 }
 
-func (c *Client) startPerPeerLoops(ctx context.Context, category string, peers []Peer, alreadyStarted map[string]bool, onChunk func(context.Context, Chunk)) {
+func (c *Client) Loop(ctx context.Context) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, peer := range peers {
+	for _, peer := range c.peers {
 		if peer.InstanceName == c.instanceName {
-			continue
-		} else if alreadyStarted[peer.InstanceName] {
 			continue
 		}
 
-		alreadyStarted[peer.InstanceName] = true
-		go c.perPeerLoop(ctx, category, peer, onChunk)
+		go c.perPeerLoop(ctx, peer)
 	}
 }
 
-func (c *Client) perPeerLoop(ctx context.Context, category string, p Peer, onChunk func(context.Context, Chunk)) {
-	if category == systemReplication {
-		for {
-			if err := c.replicationLoop(ctx, p, onChunk); err != nil {
-				c.logger.Printf("Replication loop finished with error for instance %s: %v", p.InstanceName, err)
-				time.Sleep(retryTimeout)
-			}
-		}
-	}
-
-	// TODO: handle change of address for peer
-	// TODO: in the client, allow to start reading from the end.
-	cl := client.NewSimple([]string{"http://" + p.ListenAddr})
-	cl.SetAcknowledge(false)
-
-	stateFilePath := filepath.Join(c.dirname, category+"-"+p.InstanceName+"-state.json")
-	stateContents, err := ioutil.ReadFile(stateFilePath)
-	if err == nil {
-		cl.RestoreSavedState(stateContents)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		c.logger.Printf("Could not read state file %s: %v", stateFilePath, err)
-	}
-
-	scratch := make([]byte, 256*1024)
-
+func (c *Client) perPeerLoop(ctx context.Context, p Peer) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -235,47 +197,14 @@ func (c *Client) perPeerLoop(ctx context.Context, category string, p Peer, onChu
 		default:
 		}
 
-		err := cl.Process(ctx, category, scratch, func(b []byte) error {
-			d := json.NewDecoder(bytes.NewReader(b))
-
-			for {
-				var ch Chunk
-				err := d.Decode(&ch)
-				if errors.Is(err, io.EOF) {
-					return nil
-				} else if err != nil {
-					c.logger.Printf("Failed to decode chunk from category %q: %v", category, err)
-					continue
-				}
-
-				onChunk(ctx, ch)
-			}
-		})
-
-		if err != nil {
-			log.Printf("Failed to get events from category %q: %v", category, err)
-			time.Sleep(10 * time.Second)
-			continue
-		}
-
-		stateContents, err := cl.MarshalState()
-		if err != nil {
-			c.logger.Printf("Could not marshal client state: %v", err)
-			continue
-		}
-
-		if err := ioutil.WriteFile(stateFilePath+".tmp", stateContents, 0666); err != nil {
-			c.logger.Printf("Could not write state file %q: %v", stateFilePath+".tmp", err)
-			continue
-		}
-
-		if err := os.Rename(stateFilePath+".tmp", stateFilePath); err != nil {
-			c.logger.Printf("Could not rename state file %q: %v", stateFilePath, err)
+		if err := c.replicationLoop(ctx, p); err != nil {
+			c.logger.Printf("Replication loop finished with error for instance %s: %v", p.InstanceName, err)
+			time.Sleep(retryTimeout)
 		}
 	}
 }
 
-func (c *Client) replicationLoop(parentCtx context.Context, p Peer, onChunk func(context.Context, Chunk)) error {
+func (c *Client) replicationLoop(parentCtx context.Context, p Peer) error {
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
@@ -301,7 +230,7 @@ func (c *Client) replicationLoop(parentCtx context.Context, p Peer, onChunk func
 
 	categoryDownloadStarted := false
 
-	var emptyChunk Chunk
+	var emptyMessage Message
 	readSuccessCh := make(chan bool, 1)
 	d := json.NewDecoder(resp.Body)
 
@@ -319,8 +248,8 @@ func (c *Client) replicationLoop(parentCtx context.Context, p Peer, onChunk func
 	}()
 
 	for {
-		var ch Chunk
-		err := d.Decode(&ch)
+		var msg Message
+		err := d.Decode(&msg)
 		if err != nil {
 			return fmt.Errorf("reading replication events from peer %q: %v", p.InstanceName, err)
 		}
@@ -331,15 +260,22 @@ func (c *Client) replicationLoop(parentCtx context.Context, p Peer, onChunk func
 		}
 
 		if !categoryDownloadStarted {
-			go c.downloadExistingCategories(ctx, p, onChunk)
+			go c.downloadExistingCategories(ctx, p, c.onNewChunkInReplicationQueue)
 			categoryDownloadStarted = true
 		}
 
-		if ch == emptyChunk {
+		if msg == emptyMessage {
 			continue
 		}
 
-		onChunk(ctx, ch)
+		// TODO: think about separate streams for chunk creation
+		// and chunk acknowledgement to handle out-of-space scenario.
+		switch msg.Type {
+		case ChunkCreated:
+			c.onNewChunkInReplicationQueue(ctx, msg.Chunk)
+		case ChunkAcknowledged:
+			c.onNewChunkInAckQueue(ctx, msg.Chunk)
+		}
 	}
 }
 

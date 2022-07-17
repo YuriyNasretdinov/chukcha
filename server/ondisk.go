@@ -23,7 +23,7 @@ const DeletedSuffix = ".deleted"
 
 type StorageHooks interface {
 	AfterCreatingChunk(ctx context.Context, category string, fileName string)
-	AfterAcknowledgeChunk(ctx context.Context, category string, fileName string) error
+	AfterAcknowledgeChunk(ctx context.Context, category string, fileName string)
 }
 
 type downloadNotification struct {
@@ -333,10 +333,7 @@ func (s *OnDisk) Ack(ctx context.Context, chunk string, size uint64) error {
 		return fmt.Errorf("ack %q: %v", chunk, err)
 	}
 
-	// We ignore the error here so that we can continue reading chunks when etcd is down.
-	if err := s.repl.AfterAcknowledgeChunk(ctx, s.category, chunk); err != nil {
-		s.logger.Printf("Failed to replicate ack request: %v", err)
-	}
+	s.repl.AfterAcknowledgeChunk(ctx, s.category, chunk)
 
 	return nil
 }

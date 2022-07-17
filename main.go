@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/YuriyNasretdinov/chukcha/integration"
-	"github.com/YuriyNasretdinov/chukcha/server/replication"
+	"github.com/YuriyNasretdinov/chukcha/replication"
 )
 
 var (

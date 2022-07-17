@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/YuriyNasretdinov/chukcha/client"
-	"github.com/YuriyNasretdinov/chukcha/server/replication"
+	"github.com/YuriyNasretdinov/chukcha/replication"
 	"github.com/phayes/freeport"
 )
 

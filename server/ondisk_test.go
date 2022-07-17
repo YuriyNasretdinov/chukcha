@@ -136,9 +136,7 @@ type nilHooks struct{}
 
 func (n *nilHooks) AfterCreatingChunk(ctx context.Context, category string, fileName string) {}
 
-func (n *nilHooks) AfterAcknowledgeChunk(ctx context.Context, category string, fileName string) error {
-	return nil
-}
+func (n *nilHooks) AfterAcknowledgeChunk(ctx context.Context, category string, fileName string) {}
 
 func testNewOnDisk(t *testing.T, dir string) *OnDisk {
 	t.Helper()

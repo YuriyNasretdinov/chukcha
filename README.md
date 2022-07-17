@@ -113,3 +113,17 @@ If you really want to use Chukcha, please refer to the simple Go client library 
 1. Write a garbage collector for tombstones (".deleted" files) and make a fallback mechanism to acknowledge chunks when we failed to replicate acknowledge request.
 1. Write tests for the web server.
 1. Introduce options arguments when creating a simple client.
+1. Streaming replication.
+
+# Production readiness TODOs:
+
+1. Tests cover all important components of the system.
+2. Handle typical failure scenarios:
+ - Running out of disk space or inodes
+ - Resilience against process / server crashes
+ - Completely lost network connectivity
+ - Having significant packet delays
+ - Losing the server completely
+ - Misconfiguration
+3. Having documentation for setting things up and troubleshooting.
+4. 
