@@ -92,7 +92,7 @@ func (r *Raw) Write(ctx context.Context, addr string, category string, msgs []by
 	if resp.StatusCode != http.StatusOK {
 		var b bytes.Buffer
 		io.Copy(&b, resp.Body)
-		return fmt.Errorf("http code %d, %s", resp.StatusCode, b.String())
+		return fmt.Errorf("http status %s, %s", resp.Status, b.String())
 	}
 
 	io.Copy(ioutil.Discard, resp.Body)
@@ -137,7 +137,7 @@ func (r *Raw) Read(ctx context.Context, addr string, category string, chunk stri
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, false, nil
 	} else if resp.StatusCode != http.StatusOK {
-		return nil, false, fmt.Errorf("GET %q: http code %d, %s", readURL, resp.StatusCode, b.String())
+		return nil, false, fmt.Errorf("GET %q: http status %s, %s", readURL, resp.Status, b.String())
 	}
 
 	return b.Bytes(), true, nil
@@ -171,7 +171,7 @@ func (r *Raw) ListChunks(ctx context.Context, addr, category string, fromReplica
 			return nil, err
 		}
 
-		return nil, fmt.Errorf("listChunks error: %s", body)
+		return nil, fmt.Errorf("http status %s: %s", resp.Status, body)
 	}
 
 	var res []protocol.Chunk
@@ -248,7 +248,7 @@ func (r *Raw) Ack(ctx context.Context, addr, category, chunk string, size uint64
 	if resp.StatusCode != http.StatusOK {
 		var b bytes.Buffer
 		io.Copy(&b, resp.Body)
-		return fmt.Errorf("http code %d, %s", resp.StatusCode, b.String())
+		return fmt.Errorf("http status %s, %s", resp.Status, b.String())
 	}
 
 	io.Copy(ioutil.Discard, resp.Body)

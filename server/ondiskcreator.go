@@ -44,7 +44,7 @@ func (c *OnDiskCreator) Stat(category string, fileName string) (size int64, exis
 
 	st, err := os.Stat(filePath)
 	if errors.Is(err, os.ErrNotExist) {
-		_, deletedErr := os.Stat(filePath + DeletedSuffix)
+		_, deletedErr := os.Stat(filePath + AcknowledgedSuffix)
 		if errors.Is(deletedErr, os.ErrNotExist) {
 			return 0, false, false, nil
 		} else if deletedErr != nil {

@@ -19,7 +19,7 @@ import (
 
 var errBufTooSmall = errors.New("the buffer is too small to contain a single message")
 
-const DeletedSuffix = ".deleted"
+const AcknowledgedSuffix = ".acknowledged"
 
 type StorageHooks interface {
 	AfterCreatingChunk(ctx context.Context, category string, fileName string)
@@ -354,7 +354,7 @@ func (s *OnDisk) doAckChunk(chunk string) error {
 		return fmt.Errorf("failed to truncate file %q: %v", chunk, err)
 	}
 
-	if err := os.Rename(chunkFilename, chunkFilename+DeletedSuffix); err != nil {
+	if err := os.Rename(chunkFilename, chunkFilename+AcknowledgedSuffix); err != nil {
 		return fmt.Errorf("failed to rename file %q to the deleted form: %v", chunk, err)
 	}
 
@@ -479,7 +479,7 @@ func (s *OnDisk) ListChunks() ([]protocol.Chunk, error) {
 			return nil, fmt.Errorf("reading directory: %v", err)
 		}
 
-		if strings.HasSuffix(di.Name(), DeletedSuffix) {
+		if strings.HasSuffix(di.Name(), AcknowledgedSuffix) {
 			continue
 		}
 

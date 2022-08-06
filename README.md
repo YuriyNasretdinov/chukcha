@@ -1,4 +1,6 @@
 # chukcha
+<a href='https://github.com/jpoles1/gopherbadger' target='_blank'>![gopherbadger-tag-do-not-edit](https://img.shields.io/badge/Go%20Coverage-34%25-brightgreen.svg?longCache=true&style=flat)</a>
+
 Easy to use distributed event bus similar to Kafka.
 
 The event bus is designed to be used as a persistent intermediate storage buffer for any kinds of events or logs that you might want.
@@ -108,10 +110,8 @@ If you really want to use Chukcha, please refer to the simple Go client library 
 # TODOs:
 
 1. Handle situations when we run out of disk space or the number of inodes.
-1. Compute code coverage.
 1. Write replication tests
-1. Write a garbage collector for tombstones (".deleted" files) and make a fallback mechanism to acknowledge chunks when we failed to replicate acknowledge request.
-1. Write tests for the web server.
+1. Write a garbage collector for tombstones (".acknowledged" files) and make a fallback mechanism to acknowledge chunks when we failed to replicate acknowledge request.
 1. Introduce options arguments when creating a simple client.
 1. Streaming replication.
 

@@ -1,9 +1,10 @@
-// Run it by executing the following in the chuckha root directory:
+// Run it by executing the following:
 // $ go run example/server/start.go
 
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
@@ -60,13 +61,13 @@ var hosts = []Host{
 	},
 }
 
-func runInParallel(cb func(h Host) error) error {
+func runInParallel(cb func(h Host) ([]byte, error)) error {
 	errCh := make(chan error, len(hosts))
 
 	for _, h := range hosts {
 		go func(h Host) {
-			if err := cb(h); err != nil {
-				log.Printf("%s: %v", h.InstanceName, err)
+			if out, err := cb(h); err != nil {
+				log.Printf("%s: %v (output: %s)", h.InstanceName, err, bytes.TrimSpace(out))
 				errCh <- fmt.Errorf("%s: %w", h.InstanceName, err)
 			} else {
 				errCh <- nil
@@ -112,18 +113,30 @@ func SliceUnique[T comparable](s []T) []T {
 	return res
 }
 
+func changeDirToRootDirectory() {
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").CombinedOutput()
+	if err != nil {
+		log.Fatalf("Failed to locate git working directory: %v (output: %s)", err, bytes.TrimSpace(out))
+	}
+
+	topLevelDir := string(bytes.TrimSpace(out))
+	if err := os.Chdir(topLevelDir); err != nil {
+		log.Fatalf("Failed to change directory to the root level dir %q: %v", topLevelDir, err)
+	}
+}
+
 func main() {
+	changeDirToRootDirectory()
+
 	var aliveHostsChan = make(chan Host, len(hosts))
 
-	err := runInParallel(func(h Host) error {
+	err := runInParallel(func(h Host) ([]byte, error) {
 		cmd := exec.Command("ssh", "-oBatchMode=yes", h.HostName, "killall", "chukcha", "chukcha-amd64", "||", "true")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		err := cmd.Run()
+		out, err := cmd.CombinedOutput()
 		if err == nil {
 			aliveHostsChan <- h
 		}
-		return err
+		return out, err
 	})
 	close(aliveHostsChan)
 
@@ -141,22 +154,21 @@ func main() {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 
-		log.Printf("Running %s", cmd)
+		log.Printf("%s: Running %s", arch, cmd)
 
 		if err := cmd.Run(); err != nil {
 			log.Fatalf("Failed to build Chukcha: %v", err)
 		}
 	}
 
-	err = runInParallel(func(h Host) error {
+	err = runInParallel(func(h Host) ([]byte, error) {
 		if h.HostName == "localhost" {
-			return nil
+			return nil, nil
 		}
+
 		cmd := exec.Command("scp", "-oBatchMode=yes", "/tmp/chukcha-"+h.Arch, h.HostName+":chukcha")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		log.Printf("Running %s", cmd)
-		return cmd.Run()
+		log.Printf("%s: Running %s", h.InstanceName, cmd)
+		return cmd.CombinedOutput()
 	})
 
 	if err != nil {
@@ -170,7 +182,7 @@ func main() {
 
 	commonParams := []string{"-rotate-chunk-interval=10s", "-peers=" + strings.Join(peers, ",")}
 
-	err = runInParallel(func(h Host) error {
+	err = runInParallel(func(h Host) ([]byte, error) {
 		binaryLocation := "./chukcha"
 		if h.HostName == "localhost" {
 			binaryLocation = "/tmp/chukcha-" + h.Arch
@@ -188,10 +200,8 @@ func main() {
 		}
 
 		cmd := exec.Command("ssh", args...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		log.Printf("Running %s", cmd)
-		return cmd.Run()
+		log.Printf("%s: Running %s", h.InstanceName, cmd)
+		return cmd.CombinedOutput()
 	})
 
 	if err != nil {

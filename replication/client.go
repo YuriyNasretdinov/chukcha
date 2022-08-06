@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -304,10 +303,6 @@ func (c *Client) tryDownloadExistingCategories(ctx context.Context, p Peer, onCh
 	}
 
 	for _, cat := range cats {
-		if strings.HasPrefix(cat, systemCategoryPrefix) {
-			continue
-		}
-
 		c.logger.Printf("Downloading list of chunks for category %q from peer %+v", cat, p)
 
 		chunks, err := c.r.ListChunks(ctx, "http://"+p.ListenAddr, cat, true)

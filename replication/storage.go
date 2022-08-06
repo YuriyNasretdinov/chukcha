@@ -6,10 +6,6 @@ import (
 	"sync"
 )
 
-const systemCategoryPrefix = "_system-"
-const systemReplication = systemCategoryPrefix + "replication"
-const systemAck = systemCategoryPrefix + "ack"
-
 // Storage provides hooks for the ondisk storage that will be called to
 // ensure that chunks are replicated.
 type Storage struct {
